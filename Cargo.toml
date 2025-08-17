@@ -11,6 +11,9 @@ edition = "2021"
 name = "lurk"
 path = "src/main.rs"
 
+[workspace]
+members = ["examples/ptrace-gui"]
+
 [features]
 default = []
 

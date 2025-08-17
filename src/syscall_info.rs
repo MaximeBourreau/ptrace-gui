@@ -13,7 +13,7 @@ use std::io::Write;
 use std::time::Duration;
 use syscalls::Sysno;
 
-#[derive(Debug)]
+#[derive(Clone,Debug)]
 pub struct SyscallInfo {
     pub typ: &'static str,
     pub pid: Pid,
@@ -106,7 +106,7 @@ impl Serialize for SyscallInfo {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub struct SyscallArgs(pub Vec<SyscallArg>);
 
 impl Serialize for SyscallArgs {
@@ -157,7 +157,7 @@ impl Display for RetCode {
     }
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub enum SyscallArg {
     Int(i64),
     Str(String),

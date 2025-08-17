@@ -99,7 +99,6 @@ use crate::syscall_info::{RetCode, SyscallInfo};
 const STRING_LIMIT: usize = 32;
 
 pub struct Tracer<W: Write> {
-    pid: Pid,
     args: Args,
     string_limit: Option<usize>,
     filter: Filter,
@@ -108,12 +107,12 @@ pub struct Tracer<W: Write> {
     syscalls_fail: SysnoMap<u64>,
     style_config: StyleConfig,
     output: W,
+    send_msg: Box<dyn FnMut(&SyscallInfo) -> ()>,
 }
 
 impl<W: Write> Tracer<W> {
-    pub fn new(pid: Pid, args: Args, output: W, style_config: StyleConfig) -> Result<Self> {
+    pub fn new(args: Args, output: W, style_config: StyleConfig, send_msg: Box<dyn FnMut(&SyscallInfo) -> ()>) -> Result<Self> {
         Ok(Self {
-            pid,
             filter: args.create_filter()?,
             string_limit: if args.no_abbrev {
                 None
@@ -128,6 +127,7 @@ impl<W: Write> Tracer<W> {
             syscalls_fail: SysnoMap::from_iter(SysnoSet::all().iter().map(|v| (v, 0))),
             style_config,
             output,
+            send_msg,
         })
     }
 
@@ -136,10 +136,10 @@ impl<W: Write> Tracer<W> {
     }
 
     #[allow(clippy::too_many_lines)]
-    pub fn run_tracer(&mut self) -> Result<()> {
+    pub fn run_tracer(&mut self, pid: Pid) -> Result<()> {
         // Create a hashmap to track entry and exit times across all forked processes individually.
         let mut start_times = HashMap::<Pid, Option<SystemTime>>::new();
-        start_times.insert(self.pid, None);
+        start_times.insert(pid, None);
 
         let mut options_initialized = false;
         let mut entry_regs = None;
@@ -149,9 +149,9 @@ impl<W: Write> Tracer<W> {
 
             if !options_initialized {
                 if self.args.follow_forks {
-                    arch::ptrace_init_options_fork(self.pid)?;
+                    arch::ptrace_init_options_fork(pid)?;
                 } else {
-                    arch::ptrace_init_options(self.pid)?;
+                    arch::ptrace_init_options(pid)?;
                 }
                 options_initialized = true;
             }
@@ -180,9 +180,11 @@ impl<W: Write> Tracer<W> {
                         if self.args.follow_forks {
                             start_times.insert(pid, None);
 
+                            /*
                             if !self.args.summary_only {
                                 writeln!(&mut self.output, "Attaching to child {}", pid,)?;
                             }
+                            */
                         }
 
                         self.issue_ptrace_syscall_request(pid, None)?;
@@ -204,10 +206,10 @@ impl<W: Write> Tracer<W> {
                     ptrace::cont(pid, signal)?;
                 }
                 // WIFEXITED(status)
-                WaitStatus::Exited(pid, _) => {
+                WaitStatus::Exited(exited_pid, _) => {
                     // If the process that exits is the original tracee, we can safely break here,
                     // but we need to continue if the process that exits is a child of the original tracee.
-                    if self.pid == pid {
+                    if pid == exited_pid {
                         break;
                     } else {
                         continue;
@@ -432,13 +434,8 @@ impl<W: Write> Tracer<W> {
             let json = serde_json::to_string(&info)?;
             Ok(writeln!(&mut self.output, "{json}")?)
         } else {
-            info.write_syscall(
-                self.style_config.clone(),
-                self.string_limit,
-                self.args.syscall_number,
-                self.args.syscall_times,
-                &mut self.output,
-            )
+            (self.send_msg)(info);
+            Ok(())
         }
     }
 
@@ -502,7 +499,7 @@ pub fn run_tracee(command: &[String], envs: &[String], username: &Option<String>
             .to_string()
     }
     let mut cmd = Command::new(binary);
-    cmd.args(command[1..].iter()).stdout(Stdio::null());
+    cmd.args(command[1..].iter()); // .stdout(Stdio::null());
 
     for token in envs {
         let mut parts = token.splitn(2, '=');

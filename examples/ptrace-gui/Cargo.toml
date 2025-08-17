@@ -1,0 +1,18 @@
+[package]
+name = "ptrace-gui"
+version = "0.0.1"
+description = "A downsized alternative to strace with a GUI."
+authors = ["Maxime Bourreau"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/MaximeBourreau/ptrace-gui"
+edition = "2024"
+
+[dependencies]
+anyhow = "1"
+lurk-cli =  { path = "../.." }
+nix = { version = "0.30.1", features = ["personality", "ptrace", "signal"] }
+syscalls = { version = "0.6.14", features = ["full"] }
+console = "0.15.8"
+iced = { version = "0.13.1", features = ["tokio"] }
+tokio = { version = "1.45.1", features = ["sync"] }
+tokio-stream = "0.1.17"
