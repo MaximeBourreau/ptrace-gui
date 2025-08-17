@@ -24,6 +24,7 @@ $ ptrace-gui ./yourprogram
 ptrace-gui is a derivative work of [lurk](https://github.com/JakWai01/lurk).
 
 ptrace-gui (c) 2025 Maxime Bourreau
+
 lurk (c) 2022-2023 Jakob Waibel, Yuri Astrakhan, and contributors
 
 SPDX-License-Identifier: MIT OR Apache-2.0
