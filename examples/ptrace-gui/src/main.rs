@@ -1,7 +1,3 @@
-use anyhow::{
-    bail,
-    Result,
-};
 use console::Style;
 use lurk_cli::{
     args::Args,
@@ -10,11 +6,16 @@ use lurk_cli::{
         SyscallArg,
         SyscallInfo,
     },
+    tracer_event::TracerEvent,
     Tracer,
 };
-use nix::unistd::{
-    fork,
-    ForkResult,
+use nix::{
+    unistd::{
+        fork,
+        ForkResult,
+        Pid,
+    },
+    sys::signal::Signal,
 };
 use std::{
     cell::RefCell,
@@ -59,12 +60,13 @@ const HIDDEN_SYSCALLS_LIST: [Sysno; 1] = [
 #[derive(Debug, Clone)]
 enum Message {
     BtnStart,
-    Received(SyscallInfo, bool),
+    ReceivedSyscall(SyscallInfo, bool),
+    ReceivedTermination(Pid, Signal),
     BtnContinue,
     TracerDone,
 }
 
-fn main() -> Result<()> {
+fn main() {
 
     let (sender_to_gui, receiver_to_gui) = mpsc::channel::<Message>(1000);
 
@@ -98,28 +100,36 @@ fn main() -> Result<()> {
                 args,
                 output,
                 style,
-                Box::new(move |syscall_info| {
+                Box::new(move |tracer_event| {
 
-                    if (&syscall_info).typ=="SYSCALL" {
+                    match tracer_event {
+                        TracerEvent::Syscall(syscall_info) => {
+                            if (syscall_info).typ=="SYSCALL" {
 
-                        if !hidden_syscalls.contains(&syscall_info.syscall) {
+                                if !hidden_syscalls.contains(&syscall_info.syscall) {
 
-                            let should_pause: bool = {
-                                let mut is_step_by_step = is_step_by_step.borrow_mut();
-                                if *is_step_by_step == false && syscall_info.syscall == Sysno::write {
-                                    *is_step_by_step = true;
+                                    let should_pause: bool = {
+                                        let mut is_step_by_step = is_step_by_step.borrow_mut();
+                                        if *is_step_by_step == false && syscall_info.syscall == Sysno::write {
+                                            *is_step_by_step = true;
+                                        }
+                                        *is_step_by_step
+                                    };
+
+                                    sender_to_gui.blocking_send(Message::ReceivedSyscall(syscall_info.clone(), should_pause)).unwrap();
+
+                                    if should_pause {
+                                        // waits for the user to complete this step
+                                        receiver_do_step.blocking_recv();
+                                    }
                                 }
-                                *is_step_by_step
-                            };
-
-                            sender_to_gui.blocking_send(Message::Received(syscall_info.clone(), should_pause)).unwrap();
-
-                            if should_pause {
-                                // waits for the user to complete this step
-                                receiver_do_step.blocking_recv();
                             }
                         }
+                        TracerEvent::Termination(pid, signal) => {
+                            sender_to_gui.blocking_send(Message::ReceivedTermination(pid, signal)).unwrap();
+                        }
                     }
+
                 })
             ).unwrap()
         };
@@ -137,17 +147,29 @@ fn main() -> Result<()> {
             }
 
             // waiting for the user action to start (or restart) the tracer
-            receiver_do_start.blocking_recv();
+            if receiver_do_start.blocking_recv().is_none() {
+                break;
+            }
 
             // run the traced program
-
+            
             let pid = match unsafe { fork() } {
                 Ok(ForkResult::Child) => {
-                    return lurk_cli::run_tracee(&[command], &[], &None);
+                    let _ = lurk_cli::run_tracee(&[command], &[], &None);
+                    break;
+                },
+                Ok(ForkResult::Parent { child }) => {
+                    child
+                },
+                Err(err) => {
+                    eprintln!("fork() failed: {err}");
+                    std::process::exit(-1);
                 }
-                Ok(ForkResult::Parent { child }) => child,
-                Err(err) => bail!("fork() failed: {err}"),
             };
+
+            // allows to check that the fork is done at the right time
+            // TODO : remove for release
+            eprintln!("[LOG] tracee pid={}", pid);
 
             // run the tracer
 
@@ -163,14 +185,25 @@ fn main() -> Result<()> {
     let _ = iced::application("lurk-gui", AppGui::update, AppGui::view)
         .window_size((INITIAL_WIDTH, INITIAL_HEIGHT))
         .run_with(move || AppGui::new(receiver_to_gui, sender_do_start, sender_do_step));
+}
 
-    Ok(())
+#[derive(PartialEq)]
+enum RunningState {
+    NeverStarted,
+    RunningWithoutFirstExec,
+    Running,
+    DoneWithoutFirstExec,
+    Done,
 }
 
 struct AppGui {
-    syscall_log: Vec<(SyscallInfo, String)>,
+    tracer_log: Vec<(Option<SyscallInfo>, String)>,
+    state: RunningState,
+    /*
     is_first_start: bool,
     is_running: bool,
+    is_first_exec_done: bool,
+    */
     is_paused: bool,
     sender_do_start: mpsc::Sender<()>,
     sender_do_step: mpsc::Sender<()>,
@@ -185,9 +218,13 @@ impl AppGui {
 
         (
             Self {
-                syscall_log: Vec::new(),
+                tracer_log: Vec::new(),
+                /*
                 is_first_start: true,
                 is_running: false,
+                is_first_exec_done: false,
+                */
+                state: RunningState::NeverStarted,
                 is_paused: false,
                 sender_do_start,
                 sender_do_step,
@@ -200,12 +237,19 @@ impl AppGui {
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::BtnStart => {
-                self.is_running = true;
-                self.syscall_log.clear();
+                self.state = RunningState::RunningWithoutFirstExec;
+                self.tracer_log.clear();
                 let _ = self.sender_do_start.try_send(());
                 Task::none()
             }
-            Message::Received(syscall_info, should_pause) => {
+            Message::ReceivedSyscall(syscall_info, should_pause) => {
+                // check if this syscall is exec
+                if self.state == RunningState::RunningWithoutFirstExec && syscall_info.syscall == Sysno::execve {
+                    self.state = RunningState::Running;
+                    // TODO : remove for release
+                    eprintln!("[LOG] first exec done");
+                }
+
                 self.is_paused = should_pause;
 
                 let args: String = {
@@ -239,7 +283,10 @@ impl AppGui {
 
                 // TODO show syscall_info.duration
 
-                self.append_log(syscall_info, msg)
+                self.append_log(Some(syscall_info), msg)
+            }
+            Message::ReceivedTermination(pid, signal) => {
+                self.append_log(None, format!("{} received signal {}", pid.as_raw(), signal))
             }
             Message::BtnContinue => {
                 self.is_paused = false;
@@ -247,17 +294,20 @@ impl AppGui {
                 Task::none()
             }
             Message::TracerDone => {
-                self.is_running = false;
-                self.is_first_start = false;
+                self.state = if self.state == RunningState::RunningWithoutFirstExec {
+                    RunningState::DoneWithoutFirstExec
+                } else {
+                    RunningState::Done
+                };
                 Task::none()
             }
         }
     }
 
-    fn append_log(&mut self, syscall_info: SyscallInfo, msg: String) -> iced::Task<Message> {
-        self.syscall_log.push((syscall_info, msg));
+    fn append_log(&mut self, syscall_info: Option<SyscallInfo>, msg: String) -> iced::Task<Message> {
+        self.tracer_log.push((syscall_info, msg));
         scrollable::snap_to(
-            scrollable::Id::new("syscall_log"),
+            scrollable::Id::new("tracer_log"),
             scrollable::RelativeOffset::END,
         )
     }
@@ -266,24 +316,17 @@ impl AppGui {
 
         let top_row = {
 
-            let execution_status = if self.is_running {
-                Some(text("Running"))
-            } else {
-                if self.is_first_start {
-                    None
-                } else {
-                    Some(text("Terminated"))
-                }
+            let execution_status = match self.state {
+                RunningState::Running | RunningState::RunningWithoutFirstExec => Some(text("Running")),
+                RunningState::Done => Some(text("Terminated")),
+                RunningState::DoneWithoutFirstExec => Some(text("Execution of the traced program failed")),
+                _ => None,
             };
 
-            let btn_start = if self.is_running {
-                None
-            } else {
-                if self.is_first_start {
-                    Some(button("start").on_press(Message::BtnStart))
-                } else {
-                    Some(button("restart").on_press(Message::BtnStart))
-                }
+            let btn_start = match self.state {
+                RunningState::NeverStarted => Some(button("start").on_press(Message::BtnStart)),
+                RunningState::Done | RunningState::DoneWithoutFirstExec => Some(button("restart").on_press(Message::BtnStart)),
+                _ => None
             };
 
             let btn_paused = if self.is_paused {
@@ -302,8 +345,8 @@ impl AppGui {
                 .push_maybe(btn_paused)
         };
 
-        let syscall_log: Element<_> = {
-            let t = self.syscall_log.iter().map(|s| {
+        let tracer_log: Element<_> = {
+            let t = self.tracer_log.iter().map(|s| {
                 let font = Font { weight: iced::font::Weight::Bold, ..Font::MONOSPACE};
                 let widget = text(s.1.clone())
                     .color(color!(0x0000A0))
@@ -314,14 +357,14 @@ impl AppGui {
             scrollable(column(t).spacing(2))
                 .height(Fill)
                 .width(Fill)
-                .id(scrollable::Id::new("syscall_log"))
+                .id(scrollable::Id::new("tracer_log"))
                 .into()
         };
 
         column![
             top_row,
             horizontal_rule(5),
-            syscall_log,
+            tracer_log,
         ].into()
     }
 }

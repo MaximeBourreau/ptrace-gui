@@ -71,6 +71,7 @@ pub mod arch;
 pub mod args;
 pub mod style;
 pub mod syscall_info;
+pub mod tracer_event;
 
 use anyhow::{anyhow, Result};
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
@@ -95,6 +96,7 @@ use uzers::get_user_by_name;
 
 use crate::args::{Args, Filter};
 use crate::syscall_info::{RetCode, SyscallInfo};
+use crate::tracer_event::TracerEvent;
 
 const STRING_LIMIT: usize = 32;
 
@@ -107,11 +109,16 @@ pub struct Tracer<W: Write> {
     syscalls_fail: SysnoMap<u64>,
     style_config: StyleConfig,
     output: W,
-    send_msg: Box<dyn FnMut(&SyscallInfo) -> ()>,
+    send_msg: Box<dyn FnMut(TracerEvent) -> ()>,
 }
 
 impl<W: Write> Tracer<W> {
-    pub fn new(args: Args, output: W, style_config: StyleConfig, send_msg: Box<dyn FnMut(&SyscallInfo) -> ()>) -> Result<Self> {
+    pub fn new(
+        args: Args,
+        output: W,
+        style_config: StyleConfig,
+        send_msg: Box<dyn FnMut(TracerEvent) -> ()>,
+    ) -> Result<Self> {
         Ok(Self {
             filter: args.create_filter()?,
             string_limit: if args.no_abbrev {
@@ -266,6 +273,7 @@ impl<W: Write> Tracer<W> {
                         signal,
                         if coredump { "(core dumped)" } else { "" }
                     )?;
+                    (self.send_msg)(TracerEvent::Termination(pid, signal));
                     break;
                 }
                 // WIFCONTINUED(status), this usually happens when a process receives a SIGCONT.
@@ -434,7 +442,7 @@ impl<W: Write> Tracer<W> {
             let json = serde_json::to_string(&info)?;
             Ok(writeln!(&mut self.output, "{json}")?)
         } else {
-            (self.send_msg)(info);
+            (self.send_msg)(TracerEvent::Syscall(info.clone()));
             Ok(())
         }
     }
