@@ -95,6 +95,7 @@ use syscalls::{Sysno, SysnoMap, SysnoSet};
 use uzers::get_user_by_name;
 
 use crate::args::{Args, Filter};
+use crate::arch::parse_args;
 use crate::syscall_info::{RetCode, SyscallInfo};
 use crate::tracer_event::TracerEvent;
 
@@ -149,7 +150,9 @@ impl<W: Write> Tracer<W> {
         start_times.insert(pid, None);
 
         let mut options_initialized = false;
+        /*
         let mut entry_regs = None;
+        */
 
         loop {
             let status = wait()?;
@@ -175,7 +178,10 @@ impl<W: Write> Tracer<W> {
                     // are stopped in PtraceSyscall and not here, which means if we get a SIGTRAP here,
                     // it's because the child called exec.
                     if signal == Signal::SIGTRAP {
+                        self.log_syscall_exit(pid);
+                        /*
                         self.log_standard_syscall(pid, None, None, None)?;
+                        */
                         self.issue_ptrace_syscall_request(pid, None)?;
                         continue;
                     }
@@ -227,7 +233,10 @@ impl<W: Write> Tracer<W> {
                     // We stop at the PTRACE_EVENT_EXIT event because of the PTRACE_O_TRACEEXIT option.
                     // We do this to properly catch and log exit-family syscalls, which do not have an PTRACE_SYSCALL_INFO_EXIT event.
                     if code == Event::PTRACE_EVENT_EXIT as i32 && self.is_exit_syscall(pid)? {
+                        self.log_syscall_exit(pid);
+                        /*
                         self.log_standard_syscall(pid, None, None, None)?;
+                        */
                     }
 
                     self.issue_ptrace_syscall_request(pid, None)?;
@@ -247,17 +256,25 @@ impl<W: Write> Tracer<W> {
                     // We only want to log regular syscalls on exit
                     if let Some(syscall_start_time) = start_times.get_mut(&pid) {
                         if event == 2 {
+                            /*
                             self.log_standard_syscall(
                                 pid,
                                 entry_regs,
                                 *syscall_start_time,
                                 timestamp,
                             )?;
+                            */
+                            self.log_syscall_exit(pid);
                             *syscall_start_time = None;
                         } else {
                             *syscall_start_time = timestamp;
+                            /*
                             entry_regs = Some(self.get_registers(pid)?);
+                            */
+
+                            self.log_syscall_enter(pid);
                         }
+
                     } else {
                         return Err(anyhow!("Unable to get start time for tracee {}", pid));
                     }
@@ -293,6 +310,38 @@ impl<W: Write> Tracer<W> {
         }
 
         Ok(())
+    }
+
+
+    pub fn log_syscall_enter(&mut self, pid: Pid) {
+        if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
+            (self.send_msg)(TracerEvent::SyscallEnter(pid, syscall_number, parse_args(pid, syscall_number, registers)));
+        }
+    }
+
+    pub fn log_syscall_exit(&mut self, pid: Pid) {
+        if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
+            // Theres no PTRACE_SYSCALL_INFO_EXIT for an exit-family syscall, hence ret_code will always be 0xffffffffffffffda (which is -38)
+            // -38 is ENOSYS which is put into RAX as a default return value by the kernel's syscall entry code.
+            // In order to not pollute the summary with this false positive, avoid exit-family syscalls from being counted (same behaviour as strace).
+            let ret_code = match syscall_number {
+                Sysno::exit | Sysno::exit_group => RetCode::from_raw(0),
+                _ => {
+                    #[cfg(target_arch = "x86_64")]
+                    let code = RetCode::from_raw(registers.rax);
+                    #[cfg(target_arch = "riscv64")]
+                    let code = RetCode::from_raw(registers.a7);
+                    #[cfg(target_arch = "aarch64")]
+                    let code = RetCode::from_raw(registers.regs[0]);
+                    match code {
+                        RetCode::Err(_) => self.syscalls_fail[syscall_number] += 1,
+                        _ => self.syscalls_pass[syscall_number] += 1,
+                    }
+                    code
+                }
+            };
+            (self.send_msg)(TracerEvent::SyscallExit(pid, syscall_number, ret_code));
+        }
     }
 
     pub fn report_summary(&mut self) -> Result<()> {
@@ -442,8 +491,13 @@ impl<W: Write> Tracer<W> {
             let json = serde_json::to_string(&info)?;
             Ok(writeln!(&mut self.output, "{json}")?)
         } else {
-            (self.send_msg)(TracerEvent::Syscall(info.clone()));
-            Ok(())
+            info.write_syscall(
+                self.style_config.clone(),
+                self.string_limit,
+                self.args.syscall_number,
+                self.args.syscall_times,
+                &mut self.output,
+            )
         }
     }
 

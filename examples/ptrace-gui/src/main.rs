@@ -3,8 +3,9 @@ use lurk_cli::{
     args::Args,
     style::StyleConfig,
     syscall_info::{
+        RetCode,
         SyscallArg,
-        SyscallInfo,
+        SyscallArgs,
     },
     tracer_event::TracerEvent,
     Tracer,
@@ -59,8 +60,10 @@ const HIDDEN_SYSCALLS_LIST: [Sysno; 1] = [
 
 #[derive(Debug, Clone)]
 enum Message {
+
     BtnStart,
-    ReceivedSyscall(SyscallInfo, bool),
+    ReceivedSyscallEnter(Pid, Sysno, SyscallArgs, bool),
+    ReceivedSyscallExit(Pid, Sysno, RetCode), // TODO : add Duration
     ReceivedTermination(Pid, Signal),
     BtnContinue,
     TracerDone,
@@ -103,26 +106,28 @@ fn main() {
                 Box::new(move |tracer_event| {
 
                     match tracer_event {
-                        TracerEvent::Syscall(syscall_info) => {
-                            if (syscall_info).typ=="SYSCALL" {
+                        TracerEvent::SyscallEnter(pid, syscall_number, syscall_args) => {
+                            if !hidden_syscalls.contains(&syscall_number) {
 
-                                if !hidden_syscalls.contains(&syscall_info.syscall) {
-
-                                    let should_pause: bool = {
-                                        let mut is_step_by_step = is_step_by_step.borrow_mut();
-                                        if *is_step_by_step == false && syscall_info.syscall == Sysno::write {
-                                            *is_step_by_step = true;
-                                        }
-                                        *is_step_by_step
-                                    };
-
-                                    sender_to_gui.blocking_send(Message::ReceivedSyscall(syscall_info.clone(), should_pause)).unwrap();
-
-                                    if should_pause {
-                                        // waits for the user to complete this step
-                                        receiver_do_step.blocking_recv();
+                                let should_pause: bool = {
+                                    let mut is_step_by_step = is_step_by_step.borrow_mut();
+                                    if *is_step_by_step == false && syscall_number == Sysno::write {
+                                        *is_step_by_step = true;
                                     }
+                                    *is_step_by_step
+                                };
+
+                                sender_to_gui.blocking_send(Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, should_pause)).unwrap();
+
+                                if should_pause {
+                                    // waits for the user to complete this step
+                                    receiver_do_step.blocking_recv();
                                 }
+                            }
+                        }
+                        TracerEvent::SyscallExit(pid, syscall_number, ret_code) => {
+                            if !hidden_syscalls.contains(&syscall_number) {
+                                sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, syscall_number, ret_code)).unwrap();
                             }
                         }
                         TracerEvent::Termination(pid, signal) => {
@@ -197,7 +202,7 @@ enum RunningState {
 }
 
 struct AppGui {
-    tracer_log: Vec<(Option<SyscallInfo>, String)>,
+    tracer_log: Vec<(Option<i32>, String)>,
     state: RunningState,
     /*
     is_first_start: bool,
@@ -236,25 +241,21 @@ impl AppGui {
 
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
+
             Message::BtnStart => {
                 self.state = RunningState::RunningWithoutFirstExec;
                 self.tracer_log.clear();
                 let _ = self.sender_do_start.try_send(());
                 Task::none()
             }
-            Message::ReceivedSyscall(syscall_info, should_pause) => {
-                // check if this syscall is exec
-                if self.state == RunningState::RunningWithoutFirstExec && syscall_info.syscall == Sysno::execve {
-                    self.state = RunningState::Running;
-                    // TODO : remove for release
-                    eprintln!("[LOG] first exec done");
-                }
+
+            Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, should_pause) => {
 
                 self.is_paused = should_pause;
 
                 let args: String = {
-                    let syscall_args = syscall_info.clone().args.0;
-                    let v: Vec<String> = syscall_args
+                    // let syscall_args = syscall_enter_info.clone().args.0;
+                    let v: Vec<String> = syscall_args.0
                         .iter()
                         .map(|arg| {
                             match arg {
@@ -273,26 +274,40 @@ impl AppGui {
                     v.join(",")
                 };
 
+                self.append_log(Some(pid.as_raw()), format!("{} {}({}) ...", pid.as_raw(), syscall_number, args))
+            }
+
+            Message::ReceivedSyscallExit(pid, syscall_number, ret_code) => {
+
+                // check if this syscall is exec
+                if self.state == RunningState::RunningWithoutFirstExec && syscall_number == Sysno::execve {
+                    self.state = RunningState::Running;
+                    // TODO : remove for release
+                    eprintln!("[LOG] first exec done");
+                }
+
                 let msg = format!(
-                    "{} {}({}) → {}",
-                    syscall_info.pid.as_raw(),
-                    syscall_info.syscall,
-                    args,
-                    syscall_info.result,
+                    "{}  ...{} → {}",
+                    pid.as_raw(),
+                    syscall_number,
+                    ret_code,
                 );
 
                 // TODO show syscall_info.duration
 
-                self.append_log(Some(syscall_info), msg)
+                self.append_log(Some(pid.as_raw()), msg)
             }
+
             Message::ReceivedTermination(pid, signal) => {
                 self.append_log(None, format!("{} received signal {}", pid.as_raw(), signal))
             }
+
             Message::BtnContinue => {
                 self.is_paused = false;
                 let _ = self.sender_do_step.try_send(());
                 Task::none()
             }
+
             Message::TracerDone => {
                 self.state = if self.state == RunningState::RunningWithoutFirstExec {
                     RunningState::DoneWithoutFirstExec
@@ -301,11 +316,12 @@ impl AppGui {
                 };
                 Task::none()
             }
+
         }
     }
 
-    fn append_log(&mut self, syscall_info: Option<SyscallInfo>, msg: String) -> iced::Task<Message> {
-        self.tracer_log.push((syscall_info, msg));
+    fn append_log(&mut self, pid: Option<i32>, msg: String) -> iced::Task<Message> {
+        self.tracer_log.push((pid, msg));
         scrollable::snap_to(
             scrollable::Id::new("tracer_log"),
             scrollable::RelativeOffset::END,
