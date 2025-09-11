@@ -172,10 +172,6 @@ fn main() {
                 }
             };
 
-            // allows to check that the fork is done at the right time
-            // TODO : remove for release
-            eprintln!("[LOG] tracee pid={}", pid);
-
             // run the tracer
 
             let _ = tracer.run_tracer(pid);
@@ -187,7 +183,7 @@ fn main() {
         }
     });
 
-    let _ = iced::application("lurk-gui", AppGui::update, AppGui::view)
+    let _ = iced::application("ptrace-gui", AppGui::update, AppGui::view)
         .window_size((INITIAL_WIDTH, INITIAL_HEIGHT))
         .run_with(move || AppGui::new(receiver_to_gui, sender_do_start, sender_do_step));
 }
@@ -224,11 +220,6 @@ impl AppGui {
         (
             Self {
                 tracer_log: Vec::new(),
-                /*
-                is_first_start: true,
-                is_running: false,
-                is_first_exec_done: false,
-                */
                 state: RunningState::NeverStarted,
                 is_paused: false,
                 sender_do_start,
@@ -265,7 +256,7 @@ impl AppGui {
                                     if *v == 0 {
                                         String::from("NULL")
                                     } else {
-                                        String::from("addr")
+                                        String::from("…")
                                     }
                                 },
                             }
@@ -274,7 +265,7 @@ impl AppGui {
                     v.join(",")
                 };
 
-                self.append_log(Some(pid.as_raw()), format!("{} {}({}) ...", pid.as_raw(), syscall_number, args))
+                self.append_log(Some(pid.as_raw()), format!("{} {}({}) …", pid.as_raw(), syscall_number, args))
             }
 
             Message::ReceivedSyscallExit(pid, syscall_number, ret_code) => {
@@ -282,12 +273,10 @@ impl AppGui {
                 // check if this syscall is exec
                 if self.state == RunningState::RunningWithoutFirstExec && syscall_number == Sysno::execve {
                     self.state = RunningState::Running;
-                    // TODO : remove for release
-                    eprintln!("[LOG] first exec done");
                 }
 
                 let msg = format!(
-                    "{}  ...{} → {}",
+                    "{} … {} → {}",
                     pid.as_raw(),
                     syscall_number,
                     ret_code,

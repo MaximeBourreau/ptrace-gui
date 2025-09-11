@@ -192,6 +192,7 @@ impl<W: Write> Tracer<W> {
                     if signal == Signal::SIGSTOP {
                         if self.args.follow_forks {
                             start_times.insert(pid, None);
+                            // TODO : notify in the GUI this child process (exec returned 0)
 
                             /*
                             if !self.args.summary_only {
