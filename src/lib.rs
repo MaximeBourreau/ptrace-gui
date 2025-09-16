@@ -192,7 +192,8 @@ impl<W: Write> Tracer<W> {
                     if signal == Signal::SIGSTOP {
                         if self.args.follow_forks {
                             start_times.insert(pid, None);
-                            // TODO : notify in the GUI this child process (exec returned 0)
+                            // notify the GUI that the clone syscall returned 0
+                            self.log_new_child(pid);
 
                             /*
                             if !self.args.summary_only {
@@ -313,6 +314,9 @@ impl<W: Write> Tracer<W> {
         Ok(())
     }
 
+    pub fn log_new_child(&mut self, pid: Pid) {
+            (self.send_msg)(TracerEvent::SyscallExit(pid, Sysno::clone, RetCode::from_raw(0)));
+    }
 
     pub fn log_syscall_enter(&mut self, pid: Pid) {
         if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
