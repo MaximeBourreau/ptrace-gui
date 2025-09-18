@@ -1,21 +1,11 @@
 [package]
-name = "lurk-cli"
-version = "0.3.10"
-description = "lurk is a pretty (simple) alternative to strace."
-authors = ["Jakob Waibel <salet@posteo.net>", "Yuri Astrakhan <YuriAstrakhan@gmail.com>"]
+name = "ptrace-gui"
+version = "0.0.1"
+description = "A downsized alternative to strace with a GUI."
+authors = ["Maxime Bourreau"]
 license = "MIT OR Apache-2.0"
-repository = "https://github.com/JakWai01/lurk"
-edition = "2021"
-
-[[bin]]
-name = "lurk"
-path = "src/main.rs"
-
-[workspace]
-members = ["examples/ptrace-gui"]
-
-[features]
-default = []
+repository = "https://github.com/MaximeBourreau/ptrace-gui"
+edition = "2024"
 
 # Includes the syscall tables for all architectures.
 all = [
@@ -44,10 +34,13 @@ byteorder = "1"
 clap = { version = "4", features = ["derive"] }
 comfy-table = "7"
 console = "0.15.8"
+iced = { version = "0.13.1", features = ["tokio"] }
 libc = "0.2"
 nix = { version = "0.30.1", features = ["personality", "ptrace", "signal"] }
 regex = "1"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 syscalls = { version = "0.6.14", features = ["full"] }
+tokio = { version = "1.45.1", features = ["sync"] }
+tokio-stream = "0.1.17"
 uzers = "0.12"
