@@ -71,7 +71,7 @@ pub mod arch;
 pub mod args;
 pub mod style;
 pub mod syscall_info;
-pub mod tracer_event;
+pub mod message;
 
 use anyhow::{anyhow, Result};
 use comfy_table::modifiers::UTF8_ROUND_CORNERS;
@@ -84,11 +84,11 @@ use nix::sys::ptrace::{self, Event};
 use nix::sys::signal::Signal;
 use nix::sys::wait::{wait, WaitStatus};
 use nix::unistd::Pid;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io::Write;
 use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::time::{Duration, SystemTime};
 use style::StyleConfig;
 use syscalls::{Sysno, SysnoMap, SysnoSet};
@@ -97,9 +97,21 @@ use uzers::get_user_by_name;
 use crate::args::{Args, Filter};
 use crate::arch::parse_args;
 use crate::syscall_info::{RetCode, SyscallInfo};
-use crate::tracer_event::TracerEvent;
+use crate::message::Message;
 
 const STRING_LIMIT: usize = 32;
+
+// As a teaching tool, it can be smart not to show every system calls
+// TODO maybe a whitelist instead ?
+const HIDDEN_SYSCALLS_LIST: [Sysno; 1] = [
+    // Sysno::arch_prctl,
+    // Sysno::set_tid_address,
+    Sysno::set_robust_list,
+    // Sysno::rseq,
+    // Sysno::prlimit64,
+    // Sysno::mprotect,
+    // Sysno::getrandom,
+];
 
 pub struct Tracer<W: Write> {
     args: Args,
@@ -110,7 +122,10 @@ pub struct Tracer<W: Write> {
     syscalls_fail: SysnoMap<u64>,
     style_config: StyleConfig,
     output: W,
-    send_msg: Box<dyn FnMut(TracerEvent) -> ()>,
+    sender_to_gui: tokio::sync::mpsc::Sender<Message>,
+    receiver_do_step: tokio::sync::mpsc::Receiver<()>,
+    hidden_syscalls: HashSet<Sysno>,
+    is_step_by_step: bool,
 }
 
 impl<W: Write> Tracer<W> {
@@ -118,7 +133,8 @@ impl<W: Write> Tracer<W> {
         args: Args,
         output: W,
         style_config: StyleConfig,
-        send_msg: Box<dyn FnMut(TracerEvent) -> ()>,
+        sender_to_gui: tokio::sync::mpsc::Sender<Message>,
+        receiver_do_step: tokio::sync::mpsc::Receiver<()>,
     ) -> Result<Self> {
         Ok(Self {
             filter: args.create_filter()?,
@@ -135,7 +151,10 @@ impl<W: Write> Tracer<W> {
             syscalls_fail: SysnoMap::from_iter(SysnoSet::all().iter().map(|v| (v, 0))),
             style_config,
             output,
-            send_msg,
+            sender_to_gui,
+            receiver_do_step,
+            hidden_syscalls: HashSet::from(HIDDEN_SYSCALLS_LIST),
+            is_step_by_step: false,
         })
     }
 
@@ -145,6 +164,10 @@ impl<W: Write> Tracer<W> {
 
     #[allow(clippy::too_many_lines)]
     pub fn run_tracer(&mut self, pid: Pid) -> Result<()> {
+
+        // run the tracer whithout pause at the beginning
+        self.is_step_by_step = false;
+
         // Create a hashmap to track entry and exit times across all forked processes individually.
         let mut start_times = HashMap::<Pid, Option<SystemTime>>::new();
         start_times.insert(pid, None);
@@ -292,7 +315,7 @@ impl<W: Write> Tracer<W> {
                         signal,
                         if coredump { "(core dumped)" } else { "" }
                     )?;
-                    (self.send_msg)(TracerEvent::Termination(pid, signal));
+                    self.log_process_termination(pid, signal);
                     break;
                 }
                 // WIFCONTINUED(status), this usually happens when a process receives a SIGCONT.
@@ -315,12 +338,26 @@ impl<W: Write> Tracer<W> {
     }
 
     pub fn log_new_child(&mut self, pid: Pid) {
-            (self.send_msg)(TracerEvent::SyscallExit(pid, Sysno::clone, RetCode::from_raw(0)));
+        self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, Sysno::clone, RetCode::from_raw(0))).unwrap();
     }
 
     pub fn log_syscall_enter(&mut self, pid: Pid) {
         if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
-            (self.send_msg)(TracerEvent::SyscallEnter(pid, syscall_number, parse_args(pid, syscall_number, registers)));
+            if !self.hidden_syscalls.contains(&syscall_number) {
+
+                if self.is_step_by_step == false && syscall_number == Sysno::write {
+                    self.is_step_by_step = true;
+                }
+ 
+                let syscall_args = parse_args(pid, syscall_number, registers);
+                
+                self.sender_to_gui.blocking_send(Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, self.is_step_by_step)).unwrap();
+
+                if self.is_step_by_step {
+                    // waits for the user to complete this step
+                    self.receiver_do_step.blocking_recv();
+                }
+            }
         }
     }
 
@@ -345,8 +382,14 @@ impl<W: Write> Tracer<W> {
                     code
                 }
             };
-            (self.send_msg)(TracerEvent::SyscallExit(pid, syscall_number, ret_code));
+            if !self.hidden_syscalls.contains(&syscall_number) {
+                self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, syscall_number, ret_code)).unwrap();
+            }
         }
+    }
+
+    pub fn log_process_termination(&mut self, pid: Pid, signal: Signal) {
+        self.sender_to_gui.blocking_send(Message::ReceivedProcessTermination(pid, signal)).unwrap();
     }
 
     pub fn report_summary(&mut self) -> Result<()> {

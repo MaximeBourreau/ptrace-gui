@@ -1,27 +1,18 @@
 use console::Style;
 use ptrace_gui::{
     args::Args,
+    message::Message,
     run_tracee,
     style::StyleConfig,
-    syscall_info::{
-        RetCode,
-        SyscallArg,
-        SyscallArgs,
-    },
+    syscall_info::SyscallArg,
     Tracer,
-    tracer_event::TracerEvent,
 };
-use nix::{
-    unistd::{
-        fork,
-        ForkResult,
-        Pid,
-    },
-    sys::signal::Signal,
+use nix::unistd::{
+    fork,
+    ForkResult,
 };
 use std::{
     cell::RefCell,
-    collections::HashSet,
     io,
     rc::Rc,
 };
@@ -47,35 +38,12 @@ use tokio_stream::wrappers::ReceiverStream;
 const INITIAL_WIDTH: f32 = 800.0;
 const INITIAL_HEIGHT: f32 = 480.0;
 
-// As a teaching tool, it can be smart not to show every system calls
-// TODO maybe a whitelist instead ?
-const HIDDEN_SYSCALLS_LIST: [Sysno; 1] = [
-    // Sysno::arch_prctl,
-    // Sysno::set_tid_address,
-    Sysno::set_robust_list,
-    // Sysno::rseq,
-    // Sysno::prlimit64,
-    // Sysno::mprotect,
-    // Sysno::getrandom,
-];
-
-#[derive(Debug, Clone)]
-enum Message {
-
-    BtnStart,
-    ReceivedSyscallEnter(Pid, Sysno, SyscallArgs, bool),
-    ReceivedSyscallExit(Pid, Sysno, RetCode), // TODO : add Duration
-    ReceivedTermination(Pid, Signal),
-    BtnContinue,
-    TracerDone,
-}
-
 fn main() {
 
     let (sender_to_gui, receiver_to_gui) = mpsc::channel::<Message>(1000);
 
     let (sender_do_start, mut receiver_do_start) = mpsc::channel::<()>(1);
-    let (sender_do_step, mut receiver_do_step) = mpsc::channel::<()>(1);
+    let (sender_do_step, receiver_do_step) = mpsc::channel::<()>(1);
 
     std::thread::spawn(move || {
 
@@ -94,49 +62,15 @@ fn main() {
             use_colors: true,
         };
 
-        let hidden_syscalls = HashSet::from(HIDDEN_SYSCALLS_LIST);
-
         let mut tracer = {
             let sender_to_gui = sender_to_gui.clone();
-            let is_step_by_step = is_step_by_step.clone();
 
             Tracer::new(
                 args,
                 output,
                 style,
-                Box::new(move |tracer_event| {
-
-                    match tracer_event {
-                        TracerEvent::SyscallEnter(pid, syscall_number, syscall_args) => {
-                            if !hidden_syscalls.contains(&syscall_number) {
-
-                                let should_pause: bool = {
-                                    let mut is_step_by_step = is_step_by_step.borrow_mut();
-                                    if *is_step_by_step == false && syscall_number == Sysno::write {
-                                        *is_step_by_step = true;
-                                    }
-                                    *is_step_by_step
-                                };
-
-                                sender_to_gui.blocking_send(Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, should_pause)).unwrap();
-
-                                if should_pause {
-                                    // waits for the user to complete this step
-                                    receiver_do_step.blocking_recv();
-                                }
-                            }
-                        }
-                        TracerEvent::SyscallExit(pid, syscall_number, ret_code) => {
-                            if !hidden_syscalls.contains(&syscall_number) {
-                                sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, syscall_number, ret_code)).unwrap();
-                            }
-                        }
-                        TracerEvent::Termination(pid, signal) => {
-                            sender_to_gui.blocking_send(Message::ReceivedTermination(pid, signal)).unwrap();
-                        }
-                    }
-
-                })
+                sender_to_gui,
+                receiver_do_step,
             ).unwrap()
         };
 
@@ -201,11 +135,6 @@ enum RunningState {
 struct AppGui {
     tracer_log: Vec<(Option<i32>, String)>,
     state: RunningState,
-    /*
-    is_first_start: bool,
-    is_running: bool,
-    is_first_exec_done: bool,
-    */
     is_paused: bool,
     sender_do_start: mpsc::Sender<()>,
     sender_do_step: mpsc::Sender<()>,
@@ -288,7 +217,7 @@ impl AppGui {
                 self.append_log(Some(pid.as_raw()), msg)
             }
 
-            Message::ReceivedTermination(pid, signal) => {
+            Message::ReceivedProcessTermination(pid, signal) => {
                 self.append_log(None, format!("{} received signal {}", pid.as_raw(), signal))
             }
 
