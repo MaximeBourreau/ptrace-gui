@@ -4,7 +4,10 @@ use ptrace_gui::{
     message::Message,
     run_tracee,
     style::StyleConfig,
-    syscall_info::SyscallArg,
+    syscall_info::{
+        RetCode,
+        SyscallArg,
+    },
     Tracer,
 };
 use nix::unistd::{
@@ -18,7 +21,8 @@ use std::{
 };
 use syscalls::Sysno;
 use iced::{
-    color, widget::{
+    color,
+    widget::{
         button,
         column,
         horizontal_rule,
@@ -92,7 +96,7 @@ fn main() {
             }
 
             // run the traced program
-            
+
             let pid = match unsafe { fork() } {
                 Ok(ForkResult::Child) => {
                     let _ = run_tracee(&[command], &[], &None);
@@ -132,8 +136,13 @@ enum RunningState {
     Done,
 }
 
+enum LogItem {
+    Syscall { pid: i32, syscall_number: Sysno, args: Option<Vec<String>>, ret_code: Option<RetCode>, s: String },
+    Signal { pid: i32, signal: nix::sys::signal::Signal, s: String },
+}
+
 struct AppGui {
-    tracer_log: Vec<(Option<i32>, String)>,
+    log: Vec<LogItem>,
     state: RunningState,
     is_paused: bool,
     sender_do_start: mpsc::Sender<()>,
@@ -149,7 +158,7 @@ impl AppGui {
 
         (
             Self {
-                tracer_log: Vec::new(),
+                log: Vec::new(),
                 state: RunningState::NeverStarted,
                 is_paused: false,
                 sender_do_start,
@@ -165,7 +174,7 @@ impl AppGui {
 
             Message::BtnStart => {
                 self.state = RunningState::RunningWithoutFirstExec;
-                self.tracer_log.clear();
+                self.log.clear();
                 let _ = self.sender_do_start.try_send(());
                 Task::none()
             }
@@ -174,51 +183,66 @@ impl AppGui {
 
                 self.is_paused = should_pause;
 
-                let args: String = {
-                    // let syscall_args = syscall_enter_info.clone().args.0;
-                    let v: Vec<String> = syscall_args.0
-                        .iter()
-                        .map(|arg| {
-                            match arg {
-                                SyscallArg::Int(v) => format!("{}", *v), // TODO hex and bit representation
-                                SyscallArg::Str(v) => format!("{:?}", v),
-                                SyscallArg::Addr(v) => {
-                                    if *v == 0 {
-                                        String::from("NULL")
-                                    } else {
-                                        String::from("…")
-                                    }
-                                },
-                            }
-                        })
-                        .collect();
-                    v.join(",")
-                };
+                let args: Vec<String> = syscall_args.0
+                    .iter()
+                    .map(|arg| {
+                        match arg {
+                            SyscallArg::Int(v) => format!("{}", *v), // TODO hex and bit representation
+                            SyscallArg::Str(v) => format!("{:?}", v),
+                            SyscallArg::Addr(v) => {
+                                if *v == 0 {
+                                    String::from("NULL")
+                                } else {
+                                    String::from("…")
+                                }
+                            },
+                        }
+                    })
+                    .collect();
 
-                self.append_log(Some(pid.as_raw()), format!("{} {}({}) …", pid.as_raw(), syscall_number, args))
+                let s = format!("{} {}({}) …", pid.as_raw(), syscall_number, args.join(","));
+
+                self.log.push(LogItem::Syscall { pid: pid.as_raw(), syscall_number, args: Some(args), ret_code: None, s });
+                self.scroll_log_to_end()
             }
 
-            Message::ReceivedSyscallExit(pid, syscall_number, ret_code) => {
+            Message::ReceivedSyscallExit(pid, syscall_number, final_ret_code) => {
 
                 // check if this syscall is exec
                 if self.state == RunningState::RunningWithoutFirstExec && syscall_number == Sysno::execve {
                     self.state = RunningState::Running;
                 }
 
-                let msg = format!(
-                    "{} … {} → {}",
-                    pid.as_raw(),
-                    syscall_number,
-                    ret_code,
-                );
+                if let Some(index) = self.find_syscall_item(pid.as_raw(), syscall_number) {
+                    let item = &mut self.log[index];
+                    if let LogItem::Syscall { pid , syscall_number, args, ret_code, s } = item {
+                        *ret_code = Some(final_ret_code);
+                        *s = format!(
+                            "{} {}({}) -> {}",
+                            pid,
+                            syscall_number,
+                            args.as_ref().unwrap().join(","),
+                            final_ret_code
+                        );
+                    };
+                    Task::none()
+                } else {
+                    let s = format!(
+                        "{} … {} → {}",
+                        pid.as_raw(),
+                        syscall_number,
+                        final_ret_code,
+                    );
 
-                // TODO show syscall_info.duration
-
-                self.append_log(Some(pid.as_raw()), msg)
+                    self.log.push(LogItem::Syscall { pid: pid.as_raw(), syscall_number, args: None, ret_code: Some(final_ret_code), s });
+                    self.scroll_log_to_end()
+                }
             }
 
             Message::ReceivedProcessTermination(pid, signal) => {
-                self.append_log(None, format!("{} received signal {}", pid.as_raw(), signal))
+                let s = format!("{} received signal {}", pid.as_raw(), signal);
+                self.log.push(LogItem::Signal { pid: pid.as_raw(), signal, s });
+                self.scroll_log_to_end()
             }
 
             Message::BtnContinue => {
@@ -239,10 +263,23 @@ impl AppGui {
         }
     }
 
-    fn append_log(&mut self, pid: Option<i32>, msg: String) -> iced::Task<Message> {
-        self.tracer_log.push((pid, msg));
+    /*
+    Search the last syscall item, matching pid and syscall number, in the log
+     */
+    fn find_syscall_item(&mut self, searched_pid: i32, searched_syscall_number: Sysno) -> Option<usize> {
+        self.log.iter().rposition(|item| {
+            match item {
+                LogItem::Syscall { pid, syscall_number, args: _, ret_code: _, s: _ } => {
+                  searched_pid == *pid && searched_syscall_number == *syscall_number  
+                },
+                _ => false
+            }
+        })
+    }
+
+    fn scroll_log_to_end(&mut self) -> iced::Task<Message> {
         scrollable::snap_to(
-            scrollable::Id::new("tracer_log"),
+            scrollable::Id::new("log"),
             scrollable::RelativeOffset::END,
         )
     }
@@ -281,9 +318,13 @@ impl AppGui {
         };
 
         let tracer_log: Element<_> = {
-            let t = self.tracer_log.iter().map(|s| {
+            let t = self.log.iter().map(|log_item| {
                 let font = Font { weight: iced::font::Weight::Bold, ..Font::MONOSPACE};
-                let widget = text(s.1.clone())
+                let s = match log_item {
+                    LogItem::Syscall { pid: _, syscall_number: _, args: _, ret_code: _, s } => s,
+                    LogItem::Signal { pid: _, signal: _, s } => s,
+                };
+                let widget = text(s)
                     .color(color!(0x0000A0))
                     .font(font);
                 Element::from(widget)
@@ -292,7 +333,7 @@ impl AppGui {
             scrollable(column(t).spacing(2))
                 .height(Fill)
                 .width(Fill)
-                .id(scrollable::Id::new("tracer_log"))
+                .id(scrollable::Id::new("log"))
                 .into()
         };
 
