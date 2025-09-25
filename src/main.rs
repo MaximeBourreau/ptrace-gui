@@ -14,11 +14,7 @@ use nix::unistd::{
     fork,
     ForkResult,
 };
-use std::{
-    cell::RefCell,
-    io,
-    rc::Rc,
-};
+use std::io;
 use syscalls::Sysno;
 use iced::{
     color,

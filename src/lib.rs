@@ -100,6 +100,7 @@ use crate::syscall_info::{RetCode, SyscallInfo};
 use crate::message::Message;
 
 const STRING_LIMIT: usize = 32;
+const DELAY_MS: u64 = 200;
 
 // As a teaching tool, it can be smart not to show every system calls
 // TODO maybe a whitelist instead ?
@@ -114,6 +115,7 @@ const HIDDEN_SYSCALLS_LIST: [Sysno; 1] = [
 ];
 
 pub struct Tracer<W: Write> {
+    pid: Option<Pid>,
     args: Args,
     string_limit: Option<usize>,
     filter: Filter,
@@ -137,6 +139,7 @@ impl<W: Write> Tracer<W> {
         receiver_do_step: tokio::sync::mpsc::Receiver<()>,
     ) -> Result<Self> {
         Ok(Self {
+            pid: None,
             filter: args.create_filter()?,
             string_limit: if args.no_abbrev {
                 None
@@ -164,6 +167,8 @@ impl<W: Write> Tracer<W> {
 
     #[allow(clippy::too_many_lines)]
     pub fn run_tracer(&mut self, pid: Pid) -> Result<()> {
+
+        self.pid = Some(pid);
 
         // run the tracer whithout pause at the beginning
         self.is_step_by_step = false;
@@ -244,14 +249,17 @@ impl<W: Write> Tracer<W> {
                     ptrace::cont(pid, signal)?;
                 }
                 // WIFEXITED(status)
-                WaitStatus::Exited(exited_pid, _) => {
+                WaitStatus::Exited(pid, _) => {
+                    continue;
+                    /*
                     // If the process that exits is the original tracee, we can safely break here,
                     // but we need to continue if the process that exits is a child of the original tracee.
-                    if pid == exited_pid {
+                    if self.pid.map_or(false, |p| p==pid) {
                         break;
                     } else {
                         continue;
                     };
+                    */
                 }
                 // The traced process was stopped by a `PTRACE_EVENT_*` event.
                 WaitStatus::PtraceEvent(pid, _, code) => {
@@ -348,14 +356,21 @@ impl<W: Write> Tracer<W> {
                 if self.is_step_by_step == false && syscall_number == Sysno::write {
                     self.is_step_by_step = true;
                 }
- 
-                let syscall_args = parse_args(pid, syscall_number, registers);
-                
-                self.sender_to_gui.blocking_send(Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, self.is_step_by_step)).unwrap();
 
-                if self.is_step_by_step {
+                let syscall_args = parse_args(pid, syscall_number, registers);
+
+                let should_wait =
+                    self.is_step_by_step &&
+                    self.pid.map_or(false,|p| p == pid) &&
+                    syscall_number != Sysno::wait4;
+
+                self.sender_to_gui.blocking_send(Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, should_wait)).unwrap();
+
+                if should_wait {
                     // waits for the user to complete this step
                     self.receiver_do_step.blocking_recv();
+                } else {
+                    std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
                 }
             }
         }
@@ -384,6 +399,7 @@ impl<W: Write> Tracer<W> {
             };
             if !self.hidden_syscalls.contains(&syscall_number) {
                 self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, syscall_number, ret_code)).unwrap();
+                std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
             }
         }
     }
