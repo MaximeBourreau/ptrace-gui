@@ -51,8 +51,6 @@ fn main() {
 
     std::thread::spawn(move || {
 
-        let is_step_by_step = Rc::new(RefCell::new(false));
-
         let mut args = Args::default();
         args.follow_forks = true;
 
@@ -83,12 +81,6 @@ fn main() {
         // the tracer (and the traced program) can be executed multiple times with this loop
 
         loop {
-
-            // initialization : run the tracer whithout pause at the beginning
-            {
-                let mut is_step_by_step = is_step_by_step.borrow_mut();
-                *is_step_by_step = false;
-            }
 
             // waiting for the user action to start (or restart) the tracer
             if receiver_do_start.blocking_recv().is_none() {
