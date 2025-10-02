@@ -94,7 +94,7 @@ use style::StyleConfig;
 use syscalls::{Sysno, SysnoMap, SysnoSet};
 use uzers::get_user_by_name;
 
-use crate::args::{Args, Filter};
+use crate::args::Args;
 use crate::arch::parse_args;
 use crate::syscall_info::{RetCode, SyscallInfo};
 use crate::message::Message;
@@ -102,23 +102,24 @@ use crate::message::Message;
 const STRING_LIMIT: usize = 32;
 const DELAY_MS: u64 = 200;
 
-// As a teaching tool, it can be smart not to show every system calls
-// TODO maybe a whitelist instead ?
-const HIDDEN_SYSCALLS_LIST: [Sysno; 1] = [
-    // Sysno::arch_prctl,
-    // Sysno::set_tid_address,
+/*
+As a teaching tool, it can be smart not to show every system calls
+TODO : replace with a white list of syscalls
+*/
+
+const HIDDEN_SYSCALLS_LIST: [Sysno; 7] = [
+    Sysno::arch_prctl,
+    Sysno::set_tid_address,
     Sysno::set_robust_list,
-    // Sysno::rseq,
-    // Sysno::prlimit64,
-    // Sysno::mprotect,
-    // Sysno::getrandom,
+    Sysno::rseq,
+    Sysno::prlimit64,
+    Sysno::mprotect,
+    Sysno::getrandom,
 ];
 
 pub struct Tracer<W: Write> {
     pid: Option<Pid>,
     args: Args,
-    string_limit: Option<usize>,
-    filter: Filter,
     syscalls_time: SysnoMap<Duration>,
     syscalls_pass: SysnoMap<u64>,
     syscalls_fail: SysnoMap<u64>,
@@ -140,12 +141,6 @@ impl<W: Write> Tracer<W> {
     ) -> Result<Self> {
         Ok(Self {
             pid: None,
-            filter: args.create_filter()?,
-            string_limit: if args.no_abbrev {
-                None
-            } else {
-                Some(args.string_limit.unwrap_or(STRING_LIMIT))
-            },
             args,
             syscalls_time: SysnoMap::from_iter(
                 SysnoSet::all().iter().map(|v| (v, Duration::default())),
@@ -186,11 +181,7 @@ impl<W: Write> Tracer<W> {
             let status = wait()?;
 
             if !options_initialized {
-                if self.args.follow_forks {
-                    arch::ptrace_init_options_fork(pid)?;
-                } else {
-                    arch::ptrace_init_options(pid)?;
-                }
+                arch::ptrace_init_options_fork(pid)?;
                 options_initialized = true;
             }
 
@@ -218,18 +209,9 @@ impl<W: Write> Tracer<W> {
                     // a created child of our tracee will stop with SIGSTOP.
                     // If our tracee creates children of their own, we want to trace their syscall times with a new value.
                     if signal == Signal::SIGSTOP {
-                        if self.args.follow_forks {
-                            start_times.insert(pid, None);
-                            // notify the GUI that the clone syscall returned 0
-                            self.log_new_child(pid);
-
-                            /*
-                            if !self.args.summary_only {
-                                writeln!(&mut self.output, "Attaching to child {}", pid,)?;
-                            }
-                            */
-                        }
-
+                        start_times.insert(pid, None);
+                        // notify the GUI that the clone syscall returned 0
+                        self.log_new_child(pid);
                         self.issue_ptrace_syscall_request(pid, None)?;
                         continue;
                     }
@@ -334,14 +316,6 @@ impl<W: Write> Tracer<W> {
             }
         }
 
-        if !self.args.json && (self.args.summary_only || self.args.summary) {
-            if !self.args.summary_only {
-                // Make a gap between the last syscall and the summary
-                writeln!(&mut self.output)?;
-            }
-            self.report_summary()?;
-        }
-
         Ok(())
     }
 
@@ -351,7 +325,7 @@ impl<W: Write> Tracer<W> {
 
     pub fn log_syscall_enter(&mut self, pid: Pid) {
         if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
-            if !self.hidden_syscalls.contains(&syscall_number) {
+            if self.args.raw || !self.hidden_syscalls.contains(&syscall_number) {
 
                 if self.is_step_by_step == false && syscall_number == Sysno::write {
                     self.is_step_by_step = true;
@@ -360,6 +334,7 @@ impl<W: Write> Tracer<W> {
                 let syscall_args = parse_args(pid, syscall_number, registers);
 
                 let should_wait =
+                    !self.args.raw &&
                     self.is_step_by_step &&
                     self.pid.map_or(false,|p| p == pid) &&
                     syscall_number != Sysno::wait4;
@@ -397,7 +372,7 @@ impl<W: Write> Tracer<W> {
                     code
                 }
             };
-            if !self.hidden_syscalls.contains(&syscall_number) {
+            if self.args.raw || !self.hidden_syscalls.contains(&syscall_number) {
                 self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, syscall_number, ret_code)).unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
             }
@@ -406,163 +381,6 @@ impl<W: Write> Tracer<W> {
 
     pub fn log_process_termination(&mut self, pid: Pid, signal: Signal) {
         self.sender_to_gui.blocking_send(Message::ReceivedProcessTermination(pid, signal)).unwrap();
-    }
-
-    pub fn report_summary(&mut self) -> Result<()> {
-        let headers = vec!["% time", "time", "time/call", "calls", "errors", "syscall"];
-        let mut table = Table::new();
-        table
-            .load_preset(UTF8_BORDERS_ONLY)
-            .apply_modifier(UTF8_ROUND_CORNERS)
-            .set_content_arrangement(ContentArrangement::Dynamic)
-            .set_header(&headers);
-
-        for i in 0..headers.len() {
-            table.column_mut(i).unwrap().set_cell_alignment(Right);
-        }
-
-        let mut sorted_sysno: Vec<_> = self.filter.all_enabled().iter().collect();
-        sorted_sysno.sort_by_key(|k| k.name());
-        let t_time: Duration = self.syscalls_time.values().sum();
-
-        for sysno in sorted_sysno {
-            let (Some(pass), Some(fail), Some(time)) = (
-                self.syscalls_pass.get(sysno),
-                self.syscalls_fail.get(sysno),
-                self.syscalls_time.get(sysno),
-            ) else {
-                continue;
-            };
-
-            let calls = pass + fail;
-            if calls == 0 {
-                continue;
-            }
-
-            let time_percent = if !t_time.is_zero() {
-                time.as_secs_f32() / t_time.as_secs_f32() * 100f32
-            } else {
-                0f32
-            };
-
-            table.add_row(vec![
-                Cell::new(format!("{time_percent:.1}%")),
-                Cell::new(format!("{}µs", time.as_micros())),
-                Cell::new(format!("{:.1}ns", time.as_nanos() as f64 / calls as f64)),
-                Cell::new(format!("{calls}")),
-                Cell::new(format!("{fail}")),
-                Cell::new(sysno.name()),
-            ]);
-        }
-
-        // Create the totals row, but don't add it to the table yet
-        let failed = self.syscalls_fail.values().sum::<u64>();
-        let calls: u64 = self.syscalls_pass.values().sum::<u64>() + failed;
-        let totals: Row = vec![
-            Cell::new("100%"),
-            Cell::new(format!("{}µs", t_time.as_micros())),
-            Cell::new(format!("{:.1}ns", t_time.as_nanos() as f64 / calls as f64)),
-            Cell::new(calls),
-            Cell::new(failed.to_string()),
-            Cell::new("total"),
-        ]
-        .into();
-
-        // TODO: consider using another table-creating crate
-        //       https://github.com/Nukesor/comfy-table/issues/104
-        // This is a hack to add a line between the table and the summary,
-        // computing max column width of each existing row plus the totals row
-        let divider_row: Vec<String> = table
-            .column_max_content_widths()
-            .iter()
-            .copied()
-            .enumerate()
-            .map(|(idx, val)| {
-                let cell_at_idx = totals.cell_iter().nth(idx).unwrap();
-                (val as usize).max(cell_at_idx.content().len())
-            })
-            .map(|v| str::repeat("-", v))
-            .collect();
-        table.add_row(divider_row);
-        table.add_row(totals);
-
-        if !self.args.summary_only {
-            // separate a list of syscalls from the summary table with an blank line
-            writeln!(&mut self.output)?;
-        }
-        writeln!(&mut self.output, "{table}")?;
-
-        Ok(())
-    }
-
-    fn log_standard_syscall(
-        &mut self,
-        pid: Pid,
-        entry_regs: Option<user_regs_struct>,
-        syscall_start_time: Option<SystemTime>,
-        syscall_end_time: Option<SystemTime>,
-    ) -> Result<()> {
-        let register_data = self.parse_register_data(pid);
-        if let Err(e) = register_data {
-            eprintln!("{e}");
-            return Ok(());
-        }
-        let (syscall_number, registers) = register_data.unwrap();
-
-        // Theres no PTRACE_SYSCALL_INFO_EXIT for an exit-family syscall, hence ret_code will always be 0xffffffffffffffda (which is -38)
-        // -38 is ENOSYS which is put into RAX as a default return value by the kernel's syscall entry code.
-        // In order to not pollute the summary with this false positive, avoid exit-family syscalls from being counted (same behaviour as strace).
-        let ret_code = match syscall_number {
-            Sysno::exit | Sysno::exit_group => RetCode::from_raw(0),
-            _ => {
-                #[cfg(target_arch = "x86_64")]
-                let code = RetCode::from_raw(registers.rax);
-                #[cfg(target_arch = "riscv64")]
-                let code = RetCode::from_raw(registers.a7);
-                #[cfg(target_arch = "aarch64")]
-                let code = RetCode::from_raw(registers.regs[0]);
-                match code {
-                    RetCode::Err(_) => self.syscalls_fail[syscall_number] += 1,
-                    _ => self.syscalls_pass[syscall_number] += 1,
-                }
-                code
-            }
-        };
-
-        let registers = entry_regs.unwrap_or(registers);
-
-        if self.filter.matches(syscall_number, ret_code) {
-            let elapsed = syscall_start_time.map_or(Duration::default(), |start_time| {
-                let end_time = syscall_end_time.unwrap_or(SystemTime::now());
-                end_time.duration_since(start_time).unwrap_or_default()
-            });
-
-            if syscall_start_time.is_some() {
-                self.syscalls_time[syscall_number] += elapsed;
-            }
-
-            if !self.args.summary_only {
-                let info = SyscallInfo::new(pid, syscall_number, ret_code, registers, elapsed);
-                self.write_syscall_info(&info)?;
-            }
-        }
-
-        Ok(())
-    }
-
-    fn write_syscall_info(&mut self, info: &SyscallInfo) -> Result<()> {
-        if self.args.json {
-            let json = serde_json::to_string(&info)?;
-            Ok(writeln!(&mut self.output, "{json}")?)
-        } else {
-            info.write_syscall(
-                self.style_config.clone(),
-                self.string_limit,
-                self.args.syscall_number,
-                self.args.syscall_times,
-                &mut self.output,
-            )
-        }
     }
 
     // Issue a PTRACE_SYSCALL request to the tracee, forwarding a signal if one is provided.

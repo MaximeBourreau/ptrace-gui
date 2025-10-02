@@ -1,6 +1,7 @@
+use clap::Parser;
 use console::Style;
 use ptrace_gui::{
-    args::Args,
+    args::{Args, Command},
     message::Message,
     run_tracee,
     style::StyleConfig,
@@ -45,10 +46,14 @@ fn main() {
     let (sender_do_start, mut receiver_do_start) = mpsc::channel::<()>(1);
     let (sender_do_step, receiver_do_step) = mpsc::channel::<()>(1);
 
-    std::thread::spawn(move || {
+    let args = Args::parse();
 
-        let mut args = Args::default();
-        args.follow_forks = true;
+    let command = {
+        let Command::External(c) = &args.command;
+        c.clone()
+    };
+
+    std::thread::spawn(move || {
 
         let output = io::stdout();
         let style = StyleConfig {
@@ -72,8 +77,6 @@ fn main() {
             ).unwrap()
         };
 
-        let command = std::env::args().nth(1).unwrap();
-
         // the tracer (and the traced program) can be executed multiple times with this loop
 
         loop {
@@ -87,7 +90,8 @@ fn main() {
 
             let pid = match unsafe { fork() } {
                 Ok(ForkResult::Child) => {
-                    let _ = run_tracee(&[command], &[], &None);
+                    
+                    let _ = run_tracee(&command, &[], &None);
                     break;
                 },
                 Ok(ForkResult::Parent { child }) => {
