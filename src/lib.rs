@@ -74,10 +74,6 @@ pub mod syscall_info;
 pub mod message;
 
 use anyhow::{anyhow, Result};
-use comfy_table::modifiers::UTF8_ROUND_CORNERS;
-use comfy_table::presets::UTF8_BORDERS_ONLY;
-use comfy_table::CellAlignment::Right;
-use comfy_table::{Cell, ContentArrangement, Row, Table};
 use libc::user_regs_struct;
 use nix::sys::personality::{self, Persona};
 use nix::sys::ptrace::{self, Event};
@@ -90,16 +86,15 @@ use std::io::Write;
 use std::os::unix::process::CommandExt;
 use std::process::Command;
 use std::time::{Duration, SystemTime};
-use style::StyleConfig;
 use syscalls::{Sysno, SysnoMap, SysnoSet};
 use uzers::get_user_by_name;
 
 use crate::args::Args;
 use crate::arch::parse_args;
-use crate::syscall_info::{RetCode, SyscallInfo};
+use crate::syscall_info::RetCode;
 use crate::message::Message;
 
-const STRING_LIMIT: usize = 32;
+// const STRING_LIMIT: usize = 32;
 const DELAY_MS: u64 = 200;
 
 /*
@@ -123,7 +118,6 @@ pub struct Tracer<W: Write> {
     syscalls_time: SysnoMap<Duration>,
     syscalls_pass: SysnoMap<u64>,
     syscalls_fail: SysnoMap<u64>,
-    style_config: StyleConfig,
     output: W,
     sender_to_gui: tokio::sync::mpsc::Sender<Message>,
     receiver_do_step: tokio::sync::mpsc::Receiver<()>,
@@ -135,7 +129,6 @@ impl<W: Write> Tracer<W> {
     pub fn new(
         args: Args,
         output: W,
-        style_config: StyleConfig,
         sender_to_gui: tokio::sync::mpsc::Sender<Message>,
         receiver_do_step: tokio::sync::mpsc::Receiver<()>,
     ) -> Result<Self> {
@@ -147,7 +140,6 @@ impl<W: Write> Tracer<W> {
             ),
             syscalls_pass: SysnoMap::from_iter(SysnoSet::all().iter().map(|v| (v, 0))),
             syscalls_fail: SysnoMap::from_iter(SysnoSet::all().iter().map(|v| (v, 0))),
-            style_config,
             output,
             sender_to_gui,
             receiver_do_step,
@@ -231,7 +223,7 @@ impl<W: Write> Tracer<W> {
                     ptrace::cont(pid, signal)?;
                 }
                 // WIFEXITED(status)
-                WaitStatus::Exited(pid, _) => {
+                WaitStatus::Exited(_pid, _) => {
                     continue;
                     /*
                     // If the process that exits is the original tracee, we can safely break here,

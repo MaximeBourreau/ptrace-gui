@@ -32,7 +32,6 @@ riscv64 = []
 anyhow = "1"
 byteorder = "1"
 clap = { version = "4", features = ["derive"] }
-comfy-table = "7"
 console = "0.15.8"
 iced = { version = "0.13.1", features = ["tokio"] }
 libc = "0.2"

@@ -1,10 +1,8 @@
 use clap::Parser;
-use console::Style;
 use ptrace_gui::{
     args::{Args, Command},
     message::Message,
     run_tracee,
-    style::StyleConfig,
     syscall_info::{
         RetCode,
         SyscallArg,
@@ -56,14 +54,6 @@ fn main() {
     std::thread::spawn(move || {
 
         let output = io::stdout();
-        let style = StyleConfig {
-            pid: Style::new().cyan(),
-            syscall: Style::new().white().bold(),
-            success: Style::new().green(),
-            error: Style::new().red(),
-            result: Style::new().yellow(),
-            use_colors: true,
-        };
 
         let mut tracer = {
             let sender_to_gui = sender_to_gui.clone();
@@ -71,7 +61,6 @@ fn main() {
             Tracer::new(
                 args,
                 output,
-                style,
                 sender_to_gui,
                 receiver_do_step,
             ).unwrap()
