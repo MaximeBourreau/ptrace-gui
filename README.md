@@ -5,12 +5,18 @@ It is designed as a teaching tool for my introductory course on linux system pro
 
 It's main feature is the step by step mode : execution pauses at each system call and the user must click on continue to resume.
 
-This is the first draft. It's heavily based on [lurk](https://github.com/JakWai01/lurk) and the [iced GUI library](https://github.com/iced-rs/iced) version 0.13.1.
+This is a work in progress. It's heavily based on [lurk](https://github.com/JakWai01/lurk) and the [iced GUI library](https://github.com/iced-rs/iced) version 0.13.1.
+
+## Example
+
+Here is an example of ptrace-gui showing the system calls of this program [example.c](demo/example.c).
+
+![Screenshots](demo/demo.gif)
 
 ## Build
 
 ```
-$ cargo build --release --package ptrace-gui
+$ cargo build --release
 ```
 
 ## Usage
