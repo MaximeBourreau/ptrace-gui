@@ -20,10 +20,10 @@ use iced::{
     widget::{
         button,
         column,
-        horizontal_rule,
-        horizontal_space,
         Row,
+        rule,
         scrollable,
+        space,
         text,
     },
     Element,
@@ -38,6 +38,28 @@ const INITIAL_WIDTH: f32 = 800.0;
 const INITIAL_HEIGHT: f32 = 480.0;
 
 fn main() {
+    let _ = iced::application(
+        || {
+            let (sender_do_start, sender_do_step, receiver_to_gui) = manage_processes_loop();
+            (
+                AppGui {
+                    log: Vec::new(),
+                    state: RunningState::NeverStarted,
+                    is_paused: false,
+                    sender_do_start,
+                    sender_do_step,
+                },
+                Task::stream(ReceiverStream::new(receiver_to_gui))
+            )
+        },
+        AppGui::update,
+        AppGui::view
+    )
+    .window_size((INITIAL_WIDTH, INITIAL_HEIGHT))
+    .run();
+}
+
+fn manage_processes_loop()-> (mpsc::Sender<()>, mpsc::Sender<()>, mpsc::Receiver<Message>) {
 
     let (sender_to_gui, receiver_to_gui) = mpsc::channel::<Message>(1000);
 
@@ -103,9 +125,7 @@ fn main() {
         }
     });
 
-    let _ = iced::application("ptrace-gui", AppGui::update, AppGui::view)
-        .window_size((INITIAL_WIDTH, INITIAL_HEIGHT))
-        .run_with(move || AppGui::new(receiver_to_gui, sender_do_start, sender_do_step));
+    (sender_do_start, sender_do_step, receiver_to_gui)
 }
 
 #[derive(PartialEq)]
@@ -131,24 +151,6 @@ struct AppGui {
 }
 
 impl AppGui {
-    fn new(
-        receiver_to_gui: mpsc::Receiver<Message>,
-        sender_do_start: mpsc::Sender<()>,
-        sender_do_step: mpsc::Sender<()>,
-    ) -> (Self, Task<Message>) {
-
-        (
-            Self {
-                log: Vec::new(),
-                state: RunningState::NeverStarted,
-                is_paused: false,
-                sender_do_start,
-                sender_do_step,
-            },
-
-            Task::stream(ReceiverStream::new(receiver_to_gui)),
-        )
-    }
 
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
@@ -259,9 +261,9 @@ impl AppGui {
     }
 
     fn scroll_log_to_end(&mut self) -> iced::Task<Message> {
-        scrollable::snap_to(
-            scrollable::Id::new("log"),
-            scrollable::RelativeOffset::END,
+        iced::widget::operation::snap_to(
+            "log",
+            scrollable::RelativeOffset::END
         )
     }
 
@@ -292,10 +294,10 @@ impl AppGui {
                 .align_y(iced::Center)
                 .padding(5)
                 .spacing(5)
-                .push_maybe(execution_status)
-                .push_maybe(btn_start)
-                .push(horizontal_space())
-                .push_maybe(btn_paused)
+                .push(execution_status)
+                .push(btn_start)
+                .push(space::horizontal())
+                .push(btn_paused)
         };
 
         let tracer_log: Element<_> = {
@@ -314,13 +316,13 @@ impl AppGui {
             scrollable(column(t).spacing(2))
                 .height(Fill)
                 .width(Fill)
-                .id(scrollable::Id::new("log"))
+                .id("log")
                 .into()
         };
 
         column![
             top_row,
-            horizontal_rule(5),
+            rule::horizontal(5),
             tracer_log,
         ].into()
     }
