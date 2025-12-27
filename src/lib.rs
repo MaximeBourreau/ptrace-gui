@@ -98,18 +98,21 @@ use crate::message::Message;
 const DELAY_MS: u64 = 200;
 
 /*
-As a teaching tool, it can be smart not to show every system calls
-TODO : replace with a white list of syscalls
+Enables gradual introduction to syscalls with a whitelist
 */
 
-const HIDDEN_SYSCALLS_LIST: [Sysno; 7] = [
-    Sysno::arch_prctl,
-    Sysno::set_tid_address,
-    Sysno::set_robust_list,
-    Sysno::rseq,
-    Sysno::prlimit64,
-    Sysno::mprotect,
-    Sysno::getrandom,
+const WHITELIST: [Sysno; 9] = [
+    // processes
+    Sysno::clone,
+    Sysno::execve,
+    Sysno::exit_group,
+    // filesystem
+    Sysno::read,
+    Sysno::write,
+    Sysno::open,
+    Sysno::close,
+    Sysno::fstat,
+    Sysno::lseek,
 ];
 
 pub struct Tracer<W: Write> {
@@ -121,7 +124,7 @@ pub struct Tracer<W: Write> {
     output: W,
     sender_to_gui: tokio::sync::mpsc::Sender<Message>,
     receiver_do_step: tokio::sync::mpsc::Receiver<()>,
-    hidden_syscalls: HashSet<Sysno>,
+    whitelist_set: HashSet<Sysno>,
     is_step_by_step: bool,
 }
 
@@ -143,7 +146,7 @@ impl<W: Write> Tracer<W> {
             output,
             sender_to_gui,
             receiver_do_step,
-            hidden_syscalls: HashSet::from(HIDDEN_SYSCALLS_LIST),
+            whitelist_set: HashSet::from(WHITELIST),
             is_step_by_step: false,
         })
     }
@@ -317,7 +320,7 @@ impl<W: Write> Tracer<W> {
 
     pub fn log_syscall_enter(&mut self, pid: Pid) {
         if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
-            if self.args.raw || !self.hidden_syscalls.contains(&syscall_number) {
+            if self.args.raw || self.whitelist_set.contains(&syscall_number) {
 
                 if self.is_step_by_step == false && syscall_number == Sysno::write {
                     self.is_step_by_step = true;
@@ -364,7 +367,7 @@ impl<W: Write> Tracer<W> {
                     code
                 }
             };
-            if self.args.raw || !self.hidden_syscalls.contains(&syscall_number) {
+            if self.args.raw || self.whitelist_set.contains(&syscall_number) {
                 self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, syscall_number, ret_code)).unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
             }
