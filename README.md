@@ -5,7 +5,7 @@ It is designed as a teaching tool for my introductory course on linux system pro
 
 Its main feature is the step-by-step mode : execution pauses at each system call, and the user must resume the execution manually.
 
-This is a work in progress. It is heavily based on [lurk](https://github.com/JakWai01/lurk) and the [iced GUI library](https://github.com/iced-rs/iced) version 0.13.1.
+This is a work in progress. It is heavily based on [lurk](https://github.com/JakWai01/lurk) and the [iced GUI library](https://github.com/iced-rs/iced) version 0.14.0.
 
 ## Example
 
