@@ -117,20 +117,11 @@ impl AppGui {
                     .collect();
 
                 // Preparing log text for a syscall start
-                // TODO : improve
-                let log_text = if syscall_number == Sysno::clone {
-                    format!(
-                        "{}  fork() ...⏸️",
-                        pid,
-                    )
-                } else {
-                    format!(
-                        "{}  {}({}) ...⏸️",
-                        pid,
-                        syscall_number,
-                        args.join(",")
-                    )
-                };
+                let log_text = format!(
+                    "{}  {} ... ⏸️",
+                    pid,
+                    fmt_syscall_name(syscall_number, &args.join(","))
+                );
 
                 self.log.push(LogItem::Syscall { pid, syscall_number, args: Some(args), ret_code: None, log_text });
                 self.scroll_log_to_end()
@@ -154,41 +145,22 @@ impl AppGui {
                     if let LogItem::Syscall { pid , syscall_number, args, ret_code, log_text } = item {
                         *ret_code = Some(final_ret_code);
                         // Updating log text for the complete syscall
-                        // TODO : improve
-                        *log_text = if *syscall_number == Sysno::clone {
-                            format!(
-                                "{}  fork() → {}",
-                                pid,
-                                str_ret_code
-                            )
-                        } else {
-                            format!(
-                                "{}  {}({}) → {}",
-                                pid,
-                                syscall_number,
-                                args.as_ref().unwrap().join(","),
-                                str_ret_code
-                            )
-                        };
+                        *log_text = format!(
+                            "{}  {} → {}",
+                            pid,
+                            fmt_syscall_name(*syscall_number, &args.as_ref().unwrap().join(",")),
+                            str_ret_code
+                        );
                     };
                     Task::none()
                 } else {
                     // Preparing log text for a syscall return
-                    // TODO : improve
-                    let log_text = if syscall_number == Sysno::clone {
-                        format!(
-                            "{}  … fork()  → {}",
-                            pid,
-                            str_ret_code
-                        )
-                    } else {
-                        format!(
-                            "{}  … {}(…) → {}",
-                            pid,
-                            syscall_number,
-                            str_ret_code,
-                        )
-                    };
+                    let log_text = format!(
+                        "{}  … {} → {}",
+                        pid,
+                        fmt_syscall_name(syscall_number, "…"),
+                        str_ret_code
+                    );
 
                     self.log.push(LogItem::Syscall { pid, syscall_number, args: None, ret_code: Some(final_ret_code), log_text });
                     self.scroll_log_to_end()
@@ -315,5 +287,15 @@ impl AppGui {
             rule::horizontal(5),
             tracer_log,
         ].into()
+    }
+}
+
+fn fmt_syscall_name(syscall_number: Sysno, args: &str) -> String {
+    if syscall_number == Sysno::clone {
+        "fork()".to_string()
+    } else if syscall_number == Sysno::exit_group {
+        format!("exit({})", args)
+    } else {
+        format!("{}({})", syscall_number, args)
     }
 }
