@@ -1,6 +1,6 @@
 [package]
 name = "ptrace-gui"
-version = "0.0.1"
+version = "0.0.2"
 description = "A downsized alternative to strace with a GUI."
 authors = ["Maxime Bourreau"]
 license = "MIT OR Apache-2.0"

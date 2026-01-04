@@ -1,5 +1,4 @@
 use nix::{
-    unistd::Pid,
     sys::signal::Signal,
 };
 use syscalls::Sysno;
@@ -10,10 +9,14 @@ use crate::syscall_info::{
 
 #[derive(Debug, Clone)]
 pub enum Message {
+    // user messages
     BtnStart,
-    ReceivedSyscallEnter(Pid, Sysno, SyscallArgs, bool),
-    ReceivedSyscallExit(Pid, Sysno, RetCode), // TODO : add Duration
-    ReceivedProcessTermination(Pid, Signal),
     BtnContinue,
+    // manage_processes_loop messages
+    TraceeStarted(i32),
     TracerDone,
+    // tracer messages
+    ReceivedSyscallEnter(i32, Sysno, SyscallArgs, bool),
+    ReceivedSyscallExit(i32, Sysno, RetCode), // TODO : add Duration
+    ReceivedProcessTermination(i32, Signal),
 }

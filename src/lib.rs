@@ -315,7 +315,7 @@ impl<W: Write> Tracer<W> {
     }
 
     pub fn log_new_child(&mut self, pid: Pid) {
-        self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, Sysno::clone, RetCode::from_raw(0))).unwrap();
+        self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid.as_raw(), Sysno::clone, RetCode::from_raw(0))).unwrap();
     }
 
     pub fn log_syscall_enter(&mut self, pid: Pid) {
@@ -334,7 +334,7 @@ impl<W: Write> Tracer<W> {
                     self.pid.map_or(false,|p| p == pid) &&
                     syscall_number != Sysno::wait4;
 
-                self.sender_to_gui.blocking_send(Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, should_wait)).unwrap();
+                self.sender_to_gui.blocking_send(Message::ReceivedSyscallEnter(pid.as_raw(), syscall_number, syscall_args, should_wait)).unwrap();
 
                 if should_wait {
                     // waits for the user to complete this step
@@ -368,14 +368,14 @@ impl<W: Write> Tracer<W> {
                 }
             };
             if self.args.raw || self.whitelist_set.contains(&syscall_number) {
-                self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid, syscall_number, ret_code)).unwrap();
+                self.sender_to_gui.blocking_send(Message::ReceivedSyscallExit(pid.as_raw(), syscall_number, ret_code)).unwrap();
                 std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
             }
         }
     }
 
     pub fn log_process_termination(&mut self, pid: Pid, signal: Signal) {
-        self.sender_to_gui.blocking_send(Message::ReceivedProcessTermination(pid, signal)).unwrap();
+        self.sender_to_gui.blocking_send(Message::ReceivedProcessTermination(pid.as_raw(), signal)).unwrap();
     }
 
     // Issue a PTRACE_SYSCALL request to the tracee, forwarding a signal if one is provided.
