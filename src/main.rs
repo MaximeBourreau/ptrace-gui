@@ -13,7 +13,6 @@ use ptrace_gui::{
     syscall_info::{RetCode, SyscallArg},
 };
 use syscalls::Sysno;
-use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
 const INITIAL_WIDTH: f32 = 800.0;
@@ -71,8 +70,8 @@ struct AppGui {
     state: RunningState,
     is_paused: bool,
     pid: Option<i32>,
-    sender_do_start: mpsc::Sender<()>,
-    sender_do_step: mpsc::Sender<()>,
+    sender_do_start: std::sync::mpsc::Sender<()>,
+    sender_do_step: std::sync::mpsc::Sender<()>,
 }
 
 impl AppGui {
@@ -81,7 +80,7 @@ impl AppGui {
             Message::BtnStart => {
                 self.state = RunningState::RunningWithoutFirstExec;
                 self.log.clear();
-                let _ = self.sender_do_start.try_send(());
+                let _ = self.sender_do_start.send(());
                 Task::none()
             }
 
@@ -194,7 +193,7 @@ impl AppGui {
 
             Message::BtnContinue => {
                 self.is_paused = false;
-                let _ = self.sender_do_step.try_send(());
+                let _ = self.sender_do_step.send(());
                 Task::none()
             }
 

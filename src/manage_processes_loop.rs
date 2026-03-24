@@ -7,13 +7,12 @@ use ptrace_gui::{
     run_tracee,
 };
 use std::io;
-use tokio::sync::mpsc;
 
-pub fn manage_processes_loop() -> (mpsc::Sender<()>, mpsc::Sender<()>, mpsc::Receiver<Message>) {
-    let (sender_to_gui, receiver_to_gui) = mpsc::channel::<Message>(1000);
+pub fn manage_processes_loop() -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Sender<()>, tokio::sync::mpsc::Receiver<Message>) {
+    let (sender_to_gui, receiver_to_gui) = tokio::sync::mpsc::channel::<Message>(1000);
 
-    let (sender_do_start, mut receiver_do_start) = mpsc::channel::<()>(1);
-    let (sender_do_step, receiver_do_step) = mpsc::channel::<()>(1);
+    let (sender_do_start, receiver_do_start) = std::sync::mpsc::channel::<()>();
+    let (sender_do_step, receiver_do_step) = std::sync::mpsc::channel::<()>();
 
     let args = Args::parse();
 
@@ -35,7 +34,7 @@ pub fn manage_processes_loop() -> (mpsc::Sender<()>, mpsc::Sender<()>, mpsc::Rec
 
         loop {
             // waiting for the user action to start (or restart) the tracer
-            if receiver_do_start.blocking_recv().is_none() {
+            if receiver_do_start.recv().is_err() {
                 break;
             }
 

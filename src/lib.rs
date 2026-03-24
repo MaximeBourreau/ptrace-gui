@@ -123,7 +123,7 @@ pub struct Tracer<W: Write> {
     syscalls_fail: SysnoMap<u64>,
     output: W,
     sender_to_gui: tokio::sync::mpsc::Sender<Message>,
-    receiver_do_step: tokio::sync::mpsc::Receiver<()>,
+    receiver_do_step: std::sync::mpsc::Receiver<()>,
     whitelist_set: HashSet<Sysno>,
     is_step_by_step: bool,
 }
@@ -133,7 +133,7 @@ impl<W: Write> Tracer<W> {
         args: Args,
         output: W,
         sender_to_gui: tokio::sync::mpsc::Sender<Message>,
-        receiver_do_step: tokio::sync::mpsc::Receiver<()>,
+        receiver_do_step: std::sync::mpsc::Receiver<()>,
     ) -> Result<Self> {
         Ok(Self {
             pid: None,
@@ -347,7 +347,7 @@ impl<W: Write> Tracer<W> {
 
                 if should_wait {
                     // waits for the user to complete this step
-                    self.receiver_do_step.blocking_recv();
+                    let _ = self.receiver_do_step.recv();
                 } else {
                     std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
                 }
