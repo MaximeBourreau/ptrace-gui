@@ -2,30 +2,17 @@ mod manage_processes_loop;
 
 use manage_processes_loop::manage_processes_loop;
 
+use iced::{
+    Element, Font,
+    Length::Fill,
+    Task, color,
+    widget::{Row, button, column, rule, scrollable, space, text},
+};
 use ptrace_gui::{
     message::Message,
-    syscall_info::{
-        RetCode,
-        SyscallArg,
-    },
+    syscall_info::{RetCode, SyscallArg},
 };
 use syscalls::Sysno;
-use iced::{
-    Element,
-    Font,
-    Length::Fill,
-    Task,
-    color,
-    widget::{
-        Row,
-        button,
-        column,
-        rule,
-        scrollable,
-        space,
-        text,
-    },
-};
 use tokio::sync::mpsc;
 use tokio_stream::wrappers::ReceiverStream;
 
@@ -45,11 +32,11 @@ fn main() {
                     sender_do_start,
                     sender_do_step,
                 },
-                Task::stream(ReceiverStream::new(receiver_to_gui))
+                Task::stream(ReceiverStream::new(receiver_to_gui)),
             )
         },
         AppGui::update,
-        AppGui::view
+        AppGui::view,
     )
     .window_size((INITIAL_WIDTH, INITIAL_HEIGHT))
     .run();
@@ -65,8 +52,18 @@ enum RunningState {
 }
 
 enum LogItem {
-    Syscall { pid: i32, syscall_number: Sysno, args: Option<Vec<String>>, ret_code: Option<RetCode>, log_text: String },
-    Signal { pid: i32, signal: nix::sys::signal::Signal, log_text: String },
+    Syscall {
+        pid: i32,
+        syscall_number: Sysno,
+        args: Option<Vec<String>>,
+        ret_code: Option<RetCode>,
+        log_text: String,
+    },
+    Signal {
+        pid: i32,
+        signal: nix::sys::signal::Signal,
+        log_text: String,
+    },
 }
 
 struct AppGui {
@@ -79,10 +76,8 @@ struct AppGui {
 }
 
 impl AppGui {
-
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
-
             Message::BtnStart => {
                 self.state = RunningState::RunningWithoutFirstExec;
                 self.log.clear();
@@ -96,10 +91,10 @@ impl AppGui {
             }
 
             Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, should_pause) => {
-
                 self.is_paused = should_pause;
 
-                let args: Vec<String> = syscall_args.0
+                let args: Vec<String> = syscall_args
+                    .0
                     .iter()
                     .map(|arg| {
                         match arg {
@@ -111,7 +106,7 @@ impl AppGui {
                                 } else {
                                     String::from("…")
                                 }
-                            },
+                            }
                         }
                     })
                     .collect();
@@ -123,12 +118,17 @@ impl AppGui {
                     fmt_syscall_name(syscall_number, &args.join(","))
                 );
 
-                self.log.push(LogItem::Syscall { pid, syscall_number, args: Some(args), ret_code: None, log_text });
+                self.log.push(LogItem::Syscall {
+                    pid,
+                    syscall_number,
+                    args: Some(args),
+                    ret_code: None,
+                    log_text,
+                });
                 self.scroll_log_to_end()
             }
 
             Message::ReceivedSyscallExit(pid, syscall_number, final_ret_code) => {
-
                 let str_ret_code = match final_ret_code {
                     RetCode::Ok(x) => format!("{}", x),
                     RetCode::Err(x) => format!("{}", x),
@@ -136,13 +136,22 @@ impl AppGui {
                 };
 
                 // check if this syscall is exec
-                if self.state == RunningState::RunningWithoutFirstExec && syscall_number == Sysno::execve {
+                if self.state == RunningState::RunningWithoutFirstExec
+                    && syscall_number == Sysno::execve
+                {
                     self.state = RunningState::Running;
                 }
 
                 if let Some(index) = self.find_syscall_item(pid, syscall_number) {
                     let item = &mut self.log[index];
-                    if let LogItem::Syscall { pid , syscall_number, args, ret_code, log_text } = item {
+                    if let LogItem::Syscall {
+                        pid,
+                        syscall_number,
+                        args,
+                        ret_code,
+                        log_text,
+                    } = item
+                    {
                         *ret_code = Some(final_ret_code);
                         // Updating log text for the complete syscall
                         *log_text = format!(
@@ -162,18 +171,24 @@ impl AppGui {
                         str_ret_code
                     );
 
-                    self.log.push(LogItem::Syscall { pid, syscall_number, args: None, ret_code: Some(final_ret_code), log_text });
+                    self.log.push(LogItem::Syscall {
+                        pid,
+                        syscall_number,
+                        args: None,
+                        ret_code: Some(final_ret_code),
+                        log_text,
+                    });
                     self.scroll_log_to_end()
                 }
             }
 
             Message::ReceivedProcessTermination(pid, signal) => {
-                let log_text = format!(
-                    "{}  received signal {}",
+                let log_text = format!("{}  received signal {}", pid, signal);
+                self.log.push(LogItem::Signal {
                     pid,
-                    signal
-                );
-                self.log.push(LogItem::Signal { pid, signal, log_text });
+                    signal,
+                    log_text,
+                });
                 self.scroll_log_to_end()
             }
 
@@ -191,53 +206,59 @@ impl AppGui {
                 };
                 Task::none()
             }
-
         }
     }
 
     /*
     Search the last syscall item, matching pid and syscall number, in the log
      */
-    fn find_syscall_item(&mut self, searched_pid: i32, searched_syscall_number: Sysno) -> Option<usize> {
-        self.log.iter().rposition(|item| {
-            match item {
-                LogItem::Syscall { pid, syscall_number, .. } => {
-                  searched_pid == *pid && searched_syscall_number == *syscall_number  
-                },
-                _ => false
-            }
+    fn find_syscall_item(
+        &mut self,
+        searched_pid: i32,
+        searched_syscall_number: Sysno,
+    ) -> Option<usize> {
+        self.log.iter().rposition(|item| match item {
+            LogItem::Syscall {
+                pid,
+                syscall_number,
+                ..
+            } => searched_pid == *pid && searched_syscall_number == *syscall_number,
+            _ => false,
         })
     }
 
     fn scroll_log_to_end(&mut self) -> iced::Task<Message> {
-        iced::widget::operation::snap_to(
-            "log",
-            scrollable::RelativeOffset::END
-        )
+        iced::widget::operation::snap_to("log", scrollable::RelativeOffset::END)
     }
 
     fn view(&self) -> Element<Message> {
-
         let top_row = {
-
             let execution_status = match self.state {
-                RunningState::Running | RunningState::RunningWithoutFirstExec => Some(text("Running")),
+                RunningState::Running | RunningState::RunningWithoutFirstExec => {
+                    Some(text("Running"))
+                }
                 RunningState::Done => Some(text("Terminated")),
-                RunningState::DoneWithoutFirstExec => Some(text("Execution of the traced program failed")),
+                RunningState::DoneWithoutFirstExec => {
+                    Some(text("Execution of the traced program failed"))
+                }
                 _ => None,
             };
 
             let btn_start = match self.state {
                 RunningState::NeverStarted => Some(button("start").on_press(Message::BtnStart)),
-                RunningState::Done | RunningState::DoneWithoutFirstExec => Some(button("restart").on_press(Message::BtnStart)),
-                _ => None
+                RunningState::Done | RunningState::DoneWithoutFirstExec => {
+                    Some(button("restart").on_press(Message::BtnStart))
+                }
+                _ => None,
             };
 
             let btn_paused = match self.state {
-                RunningState::Running | RunningState::RunningWithoutFirstExec => if self.is_paused {
-                    Some(button("continue").on_press(Message::BtnContinue))
-                } else {
-                    Some(button("continue"))
+                RunningState::Running | RunningState::RunningWithoutFirstExec => {
+                    if self.is_paused {
+                        Some(button("continue").on_press(Message::BtnContinue))
+                    } else {
+                        Some(button("continue"))
+                    }
                 }
                 _ => None,
             };
@@ -254,11 +275,24 @@ impl AppGui {
 
         let tracer_log: Element<_> = {
             let t = self.log.iter().map(|log_item| {
-                let font = Font { weight: iced::font::Weight::Bold, ..Font::MONOSPACE};
+                let font = Font {
+                    weight: iced::font::Weight::Bold,
+                    ..Font::MONOSPACE
+                };
                 // Extract the pid and the string of this log item
                 let (pid, log_text) = match log_item {
-                    LogItem::Syscall { pid, syscall_number: _, args: _, ret_code: _, log_text } => (pid, log_text),
-                    LogItem::Signal { pid, signal: _, log_text } => (pid, log_text),
+                    LogItem::Syscall {
+                        pid,
+                        syscall_number: _,
+                        args: _,
+                        ret_code: _,
+                        log_text,
+                    } => (pid, log_text),
+                    LogItem::Signal {
+                        pid,
+                        signal: _,
+                        log_text,
+                    } => (pid, log_text),
                 };
                 // Display first process and its child processes in different colors
                 let c = if *pid == self.pid.unwrap_or(-1) {
@@ -268,11 +302,7 @@ impl AppGui {
                     // color!(0x5CB85C)
                     color!(0x3e8e3e)
                 };
-                Element::from(
-                    text(log_text)
-                        .color(c)
-                        .font(font)
-                )
+                Element::from(text(log_text).color(c).font(font))
             });
 
             scrollable(column(t).spacing(2))
@@ -282,11 +312,7 @@ impl AppGui {
                 .into()
         };
 
-        column![
-            top_row,
-            rule::horizontal(5),
-            tracer_log,
-        ].into()
+        column![top_row, rule::horizontal(5), tracer_log,].into()
     }
 }
 

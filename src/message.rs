@@ -1,11 +1,6 @@
-use nix::{
-    sys::signal::Signal,
-};
+use crate::syscall_info::{RetCode, SyscallArgs};
+use nix::sys::signal::Signal;
 use syscalls::Sysno;
-use crate::syscall_info::{
-    RetCode,
-    SyscallArgs,
-};
 
 #[derive(Debug, Clone)]
 pub enum Message {
