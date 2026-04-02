@@ -99,6 +99,11 @@ impl Serialize for SyscallInfo {
         map.serialize_entry("num", &self.syscall)?;
         map.serialize_entry("syscall", &self.syscall.to_string())?;
         map.serialize_entry("args", &self.args)?;
+        match self.result {
+            RetCode::Ok(value) => map.serialize_entry("success", &value)?,
+            RetCode::Err(value) => map.serialize_entry("error", &value)?,
+            RetCode::Address(value) => map.serialize_entry("result", &value)?,
+        }
         map.serialize_entry("duration", &self.duration.as_secs_f64())?;
         map.end()
     }
@@ -122,13 +127,10 @@ impl Serialize for SyscallArgs {
     }
 }
 
-#[derive(Debug, Copy, Clone, Serialize)]
+#[derive(Debug, Copy, Clone)]
 pub enum RetCode {
-    #[serde(rename = "success")]
     Ok(i32),
-    #[serde(rename = "error")]
     Err(i32),
-    #[serde(rename = "result")]
     Address(usize),
 }
 
@@ -179,7 +181,7 @@ impl SyscallArg {
     }
 }
 
-fn trim_str(string: &str, limit: usize) -> Cow<str> {
+fn trim_str(string: &str, limit: usize) -> Cow<'_, str> {
     match string.chars().as_str().get(..limit) {
         None => Borrowed(string),
         Some(s) => Owned(format!("{s}...")),
