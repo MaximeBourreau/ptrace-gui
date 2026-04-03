@@ -55,7 +55,7 @@ pub fn manage_processes_loop() -> (std::sync::mpsc::Sender<()>, std::sync::mpsc:
             // tell the user the tracee pid
 
             sender_to_gui
-                .blocking_send(Message::TraceeStarted(pid.as_raw()))
+                .blocking_send(Message::TraceeStarted(pid))
                 .unwrap();
 
             // run the tracer

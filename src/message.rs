@@ -1,5 +1,5 @@
 use crate::syscall_info::{RetCode, SyscallArgs};
-use nix::sys::signal::Signal;
+use nix::{sys::signal::Signal, unistd::Pid};
 use syscalls::Sysno;
 
 #[derive(Debug, Clone)]
@@ -8,10 +8,10 @@ pub enum Message {
     BtnStart,
     BtnContinue,
     // manage_processes_loop messages
-    TraceeStarted(i32),
+    TraceeStarted(Pid),
     TracerDone,
     // tracer messages
-    ReceivedSyscallEnter(i32, Sysno, SyscallArgs, bool),
-    ReceivedSyscallExit(i32, Sysno, RetCode), // TODO : add Duration
-    ReceivedProcessTermination(i32, Signal),
+    ReceivedSyscallEnter(Pid, Sysno, SyscallArgs, bool),
+    ReceivedSyscallExit(Pid, Sysno, RetCode),
+    ReceivedProcessTermination(Pid, Signal),
 }

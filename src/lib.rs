@@ -315,7 +315,7 @@ impl<W: Write> Tracer<W> {
     pub fn log_new_child(&mut self, pid: Pid) {
         self.sender_to_gui
             .blocking_send(Message::ReceivedSyscallExit(
-                pid.as_raw(),
+                pid,
                 Sysno::clone,
                 RetCode::from_raw(0),
             ))
@@ -338,7 +338,7 @@ impl<W: Write> Tracer<W> {
 
                 self.sender_to_gui
                     .blocking_send(Message::ReceivedSyscallEnter(
-                        pid.as_raw(),
+                        pid,
                         syscall_number,
                         syscall_args,
                         should_wait,
@@ -379,7 +379,7 @@ impl<W: Write> Tracer<W> {
             if self.args.raw || self.whitelist_set.contains(&syscall_number) {
                 self.sender_to_gui
                     .blocking_send(Message::ReceivedSyscallExit(
-                        pid.as_raw(),
+                        pid,
                         syscall_number,
                         ret_code,
                     ))
@@ -391,7 +391,7 @@ impl<W: Write> Tracer<W> {
 
     pub fn log_process_termination(&mut self, pid: Pid, signal: Signal) {
         self.sender_to_gui
-            .blocking_send(Message::ReceivedProcessTermination(pid.as_raw(), signal))
+            .blocking_send(Message::ReceivedProcessTermination(pid, signal))
             .unwrap();
     }
 

@@ -8,6 +8,7 @@ use iced::{
     Task, color,
     widget::{Row, button, column, rule, scrollable, space, text},
 };
+use nix::unistd::Pid;
 use ptrace_gui::{
     message::Message,
     syscall_info::{RetCode, SyscallArg},
@@ -23,7 +24,7 @@ fn main() {
         || {
             let (sender_do_start, sender_do_step, receiver_to_gui) = manage_processes_loop();
             (
-                AppGui {
+                AppState {
                     log: Vec::new(),
                     state: RunningState::NeverStarted,
                     is_paused: false,
@@ -34,8 +35,8 @@ fn main() {
                 Task::stream(ReceiverStream::new(receiver_to_gui)),
             )
         },
-        AppGui::update,
-        AppGui::view,
+        AppState::update,
+        AppState::view,
     )
     .window_size((INITIAL_WIDTH, INITIAL_HEIGHT))
     .run();
@@ -52,29 +53,29 @@ enum RunningState {
 
 enum LogItem {
     Syscall {
-        pid: i32,
+        pid: Pid,
         syscall_number: Sysno,
         args: Option<Vec<String>>,
         ret_code: Option<RetCode>,
         log_text: String,
     },
     Signal {
-        pid: i32,
+        pid: Pid,
         signal: nix::sys::signal::Signal,
         log_text: String,
     },
 }
 
-struct AppGui {
+struct AppState {
     log: Vec<LogItem>,
     state: RunningState,
     is_paused: bool,
-    pid: Option<i32>,
+    pid: Option<Pid>,
     sender_do_start: std::sync::mpsc::Sender<()>,
     sender_do_step: std::sync::mpsc::Sender<()>,
 }
 
-impl AppGui {
+impl AppState {
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::BtnStart => {
@@ -213,7 +214,7 @@ impl AppGui {
      */
     fn find_syscall_item(
         &mut self,
-        searched_pid: i32,
+        searched_pid: Pid,
         searched_syscall_number: Sysno,
     ) -> Option<usize> {
         self.log.iter().rposition(|item| match item {
@@ -294,7 +295,7 @@ impl AppGui {
                     } => (pid, log_text),
                 };
                 // Display first process and its child processes in different colors
-                let c = if *pid == self.pid.unwrap_or(-1) {
+                let c = if self.pid == Some(*pid) {
                     // color!(0x428BCA)
                     color!(0x2d6a9f)
                 } else {
