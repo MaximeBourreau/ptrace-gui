@@ -85,7 +85,7 @@ impl AppState {
                 Task::none()
             }
 
-            Message::ReceivedSyscallEnter(_origin, pid, syscall_number, syscall_args, paused) => {
+            Message::ReceivedSyscallEnter(src_lineno, pid, syscall_number, syscall_args, paused) => {
                 self.pid_list.insert(pid, true);
 
                 let args: Vec<String> = syscall_args
@@ -107,11 +107,20 @@ impl AppState {
                     .collect();
 
                 // Preparing log text for a syscall start
-                let log_text = format!(
-                    "{}  {} ...",
-                    pid,
-                    fmt_syscall_name(syscall_number, &args.join(","))
-                );
+                let log_text = if cfg!(debug_assertions) {
+                    format!(
+                        "L{} {}  {} ...",
+                        src_lineno,
+                        pid,
+                        fmt_syscall_name(syscall_number, &args.join(","))
+                    )
+                } else {
+                    format!(
+                        "{}  {} ...",
+                        pid,
+                        fmt_syscall_name(syscall_number, &args.join(","))
+                    )
+                };
 
                 if let Some(item) = self.log.iter_mut().rfind(|item| {
                     if let LogItem::Syscall {
@@ -140,7 +149,7 @@ impl AppState {
             }
 
             Message::ReceivedSyscallExit(
-                _origin,
+                src_lineno,
                 pid,
                 syscall_number,
                 final_ret_code,
@@ -164,13 +173,25 @@ impl AppState {
                     } = item
                     {
                         *ret_code = Some(final_ret_code);
+
                         // Updating log text for the complete syscall
-                        *log_text = format!(
-                            "{}  {} → {}",
-                            pid,
-                            fmt_syscall_name(*syscall_number, &args.as_ref().unwrap().join(",")),
-                            str_ret_code
-                        );
+                        *log_text = if cfg!(debug_assertions) {
+                            format!(
+                                "L{} {}  {} → {}",
+                                src_lineno,
+                                pid,
+                                fmt_syscall_name(*syscall_number, &args.as_ref().unwrap().join(",")),
+                                str_ret_code
+                            )
+                        } else {
+                            format!(
+                                "{}  {} → {}",
+                                pid,
+                                fmt_syscall_name(*syscall_number, &args.as_ref().unwrap().join(",")),
+                                str_ret_code
+                            )
+                        };
+
                         *paused = should_pause;
                     };
                     Task::none()
@@ -179,12 +200,22 @@ impl AppState {
                         self.pid_list.insert(pid, true);
                     }
                     // Preparing log text for a syscall return
-                    let log_text = format!(
-                        "{}  … {} → {}",
-                        pid,
-                        fmt_syscall_name(syscall_number, "…"),
-                        str_ret_code
-                    );
+                    let log_text = if cfg!(debug_assertions) {
+                        format!(
+                            "L{} {}  … {} → {}",
+                            src_lineno,
+                            pid,
+                            fmt_syscall_name(syscall_number, "…"),
+                            str_ret_code
+                        )
+                    } else {
+                        format!(
+                            "{}  … {} → {}",
+                            pid,
+                            fmt_syscall_name(syscall_number, "…"),
+                            str_ret_code
+                        )
+                    };
 
                     self.log.push(LogItem::Syscall {
                         pid,

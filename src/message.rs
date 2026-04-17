@@ -21,10 +21,10 @@ pub enum Message {
     TracerDone,
 
     /// A process is entering a syscall
-    ReceivedSyscallEnter(u8, Pid, Sysno, SyscallArgs, bool),
+    ReceivedSyscallEnter(u32, Pid, Sysno, SyscallArgs, bool),
 
     /// A process has completed a syscall
-    ReceivedSyscallExit(u8, Pid, Sysno, RetCode, bool),
+    ReceivedSyscallExit(u32, Pid, Sysno, RetCode, bool),
 
     /// A process is done
     ReceivedProcessTermination(Pid, Signal),

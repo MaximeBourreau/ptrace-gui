@@ -199,7 +199,7 @@ impl<W: Write> Tracer<W> {
                     // are stopped in PtraceSyscall and not here, which means if we get a SIGTRAP here,
                     // it's because the child called exec.
                     if signal == Signal::SIGTRAP {
-                        self.log_syscall_exit(1, pid, true); // always restart
+                        self.log_syscall_exit(line!(), pid, true); // always restart
 
                         /*
                         self.log_standard_syscall(pid, None, None, None)?;
@@ -255,7 +255,7 @@ impl<W: Write> Tracer<W> {
                     // We do this to properly catch and log exit-family syscalls, which do not have an PTRACE_SYSCALL_INFO_EXIT event.
                     if code == Event::PTRACE_EVENT_EXIT as i32 && self.is_exit_syscall(pid)? {
                         // syscall_exit of exit()
-                        self.log_syscall_exit(2, pid, false); // never restart
+                        self.log_syscall_exit(line!(), pid, false); // never restart
 
                         /*
                         self.log_standard_syscall(pid, None, None, None)?;
@@ -292,7 +292,7 @@ impl<W: Write> Tracer<W> {
                               "standard" syscall
                               fork (process creator side)
                             */
-                            let k = self.log_syscall_exit(3, pid, true);
+                            let k = self.log_syscall_exit(line!(), pid, true);
                             *syscall_start_time = None;
                         } else {
                             *syscall_start_time = timestamp;
@@ -300,7 +300,7 @@ impl<W: Write> Tracer<W> {
                             entry_regs = Some(self.get_registers(pid)?);
                             */
 
-                            self.log_syscall_enter(4, pid);
+                            self.log_syscall_enter(line!(), pid);
                         }
                     } else {
                         return Err(anyhow!("Unable to get start time for tracee {}", pid));
@@ -339,7 +339,7 @@ impl<W: Write> Tracer<W> {
     pub fn log_new_child(&mut self, pid: Pid) {
         self.sender_to_gui
             .blocking_send(Message::ReceivedSyscallExit(
-                5,
+                line!(),
                 pid,
                 Sysno::clone,
                 RetCode::from_raw(0),
@@ -348,7 +348,7 @@ impl<W: Write> Tracer<W> {
             .unwrap();
     }
 
-    pub fn log_syscall_enter(&mut self, origin: u8, pid: Pid) {
+    pub fn log_syscall_enter(&mut self, src_lineno: u32, pid: Pid) {
         if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
             // appel système pas en whitelist -> ne pas envoyer au GUI, relancer immédiatement sans pause
 
@@ -357,7 +357,7 @@ impl<W: Write> Tracer<W> {
                 let paused = ![Sysno::clone, Sysno::wait4].contains(&syscall_number);
                 self.sender_to_gui
                     .blocking_send(Message::ReceivedSyscallEnter(
-                        origin,
+                        src_lineno,
                         pid,
                         syscall_number,
                         syscall_args,
@@ -373,7 +373,7 @@ impl<W: Write> Tracer<W> {
         }
     }
 
-    pub fn log_syscall_exit(&mut self, origin: u8, pid: Pid, allow_resume: bool) {
+    pub fn log_syscall_exit(&mut self, src_lineno: u32, pid: Pid, allow_resume: bool) {
         let is_fork: bool = if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
             // Theres no PTRACE_SYSCALL_INFO_EXIT for an exit-family syscall, hence ret_code will always be 0xffffffffffffffda (which is -38)
             // -38 is ENOSYS which is put into RAX as a default return value by the kernel's syscall entry code.
@@ -398,7 +398,7 @@ impl<W: Write> Tracer<W> {
             if self.args.raw || self.whitelist_set.contains(&syscall_number) {
                 self.sender_to_gui
                     .blocking_send(Message::ReceivedSyscallExit(
-                        origin,
+                        src_lineno,
                         pid,
                         syscall_number,
                         ret_code,
