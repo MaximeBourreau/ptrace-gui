@@ -78,7 +78,7 @@ use libc::user_regs_struct;
 use nix::sys::personality::{self, Persona};
 use nix::sys::ptrace::{self, Event};
 use nix::sys::signal::Signal;
-use nix::sys::wait::{WaitStatus, wait};
+use nix::sys::wait::{WaitPidFlag, WaitStatus, waitpid};
 use nix::unistd::Pid;
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -95,17 +95,18 @@ use crate::message::Message;
 use crate::syscall_info::RetCode;
 
 // const STRING_LIMIT: usize = 32;
-const DELAY_MS: u64 = 200;
+const DELAY_MS: u64 = 10;
 
 /*
 Enables gradual introduction to syscalls with a whitelist
 */
 
-const WHITELIST: [Sysno; 9] = [
+const WHITELIST: [Sysno; 10] = [
     // processes
     Sysno::clone,
     Sysno::execve,
     Sysno::exit_group,
+    Sysno::wait4,
     // filesystem
     Sysno::read,
     Sysno::write,
@@ -123,7 +124,7 @@ pub struct Tracer<W: Write> {
     syscalls_fail: SysnoMap<u64>,
     output: W,
     sender_to_gui: tokio::sync::mpsc::Sender<Message>,
-    receiver_do_step: std::sync::mpsc::Receiver<()>,
+    receiver_do_step: std::sync::mpsc::Receiver<Pid>,
     whitelist_set: HashSet<Sysno>,
     is_step_by_step: bool,
 }
@@ -133,7 +134,7 @@ impl<W: Write> Tracer<W> {
         args: Args,
         output: W,
         sender_to_gui: tokio::sync::mpsc::Sender<Message>,
-        receiver_do_step: std::sync::mpsc::Receiver<()>,
+        receiver_do_step: std::sync::mpsc::Receiver<Pid>,
     ) -> Result<Self> {
         Ok(Self {
             pid: None,
@@ -166,18 +167,25 @@ impl<W: Write> Tracer<W> {
         let mut start_times = HashMap::<Pid, Option<SystemTime>>::new();
         start_times.insert(pid, None);
 
-        let mut options_initialized = false;
-        /*
-        let mut entry_regs = None;
-        */
+        let result = waitpid(None, None);
+        let first_exec_ok = match result {
+            Ok(WaitStatus::Stopped(_, Signal::SIGTRAP)) => true,
+            _ => false,
+        };
+
+        if !first_exec_ok {
+            return Ok(());
+        }
+
+        self.sender_to_gui
+            .blocking_send(Message::TraceeFirstExec)
+            .unwrap();
+
+        let _ = arch::ptrace_init_options_fork(pid);
+        let _ = self.issue_ptrace_syscall_request(pid, None);
 
         loop {
-            let status = wait()?;
-
-            if !options_initialized {
-                arch::ptrace_init_options_fork(pid)?;
-                options_initialized = true;
-            }
+            let status = waitpid(None, Some(WaitPidFlag::WNOHANG))?;
 
             match status {
                 // `WIFSTOPPED(status), signal is WSTOPSIG(status)
@@ -191,11 +199,14 @@ impl<W: Write> Tracer<W> {
                     // are stopped in PtraceSyscall and not here, which means if we get a SIGTRAP here,
                     // it's because the child called exec.
                     if signal == Signal::SIGTRAP {
-                        self.log_syscall_exit(pid);
+                        self.log_syscall_exit(1, pid, true); // always restart
+
                         /*
                         self.log_standard_syscall(pid, None, None, None)?;
                         */
+                        /*
                         self.issue_ptrace_syscall_request(pid, None)?;
+                        */
                         continue;
                     }
 
@@ -205,8 +216,9 @@ impl<W: Write> Tracer<W> {
                     if signal == Signal::SIGSTOP {
                         start_times.insert(pid, None);
                         // notify the GUI that the clone syscall returned 0
+                        // syscall_exit of fork() (child side)
                         self.log_new_child(pid);
-                        self.issue_ptrace_syscall_request(pid, None)?;
+                        // self.issue_ptrace_syscall_request(pid, None)?;
                         continue;
                     }
 
@@ -242,7 +254,9 @@ impl<W: Write> Tracer<W> {
                     // We stop at the PTRACE_EVENT_EXIT event because of the PTRACE_O_TRACEEXIT option.
                     // We do this to properly catch and log exit-family syscalls, which do not have an PTRACE_SYSCALL_INFO_EXIT event.
                     if code == Event::PTRACE_EVENT_EXIT as i32 && self.is_exit_syscall(pid)? {
-                        self.log_syscall_exit(pid);
+                        // syscall_exit of exit()
+                        self.log_syscall_exit(2, pid, false); // never restart
+
                         /*
                         self.log_standard_syscall(pid, None, None, None)?;
                         */
@@ -273,7 +287,12 @@ impl<W: Write> Tracer<W> {
                                 timestamp,
                             )?;
                             */
-                            self.log_syscall_exit(pid);
+                            /*
+                            syscall exit of :
+                              "standard" syscall
+                              fork (process creator side)
+                            */
+                            let k = self.log_syscall_exit(3, pid, true);
                             *syscall_start_time = None;
                         } else {
                             *syscall_start_time = timestamp;
@@ -281,13 +300,11 @@ impl<W: Write> Tracer<W> {
                             entry_regs = Some(self.get_registers(pid)?);
                             */
 
-                            self.log_syscall_enter(pid);
+                            self.log_syscall_enter(4, pid);
                         }
                     } else {
                         return Err(anyhow!("Unable to get start time for tracee {}", pid));
                     }
-
-                    self.issue_ptrace_syscall_request(pid, None)?;
                 }
                 // WIFSIGNALED(status), signal is WTERMSIG(status) and coredump is WCOREDUMP(status)
                 WaitStatus::Signaled(pid, signal, coredump) => {
@@ -303,9 +320,16 @@ impl<W: Write> Tracer<W> {
                 }
                 // WIFCONTINUED(status), this usually happens when a process receives a SIGCONT.
                 // Just continue with the next iteration of the loop.
-                WaitStatus::Continued(_) | WaitStatus::StillAlive => {
+                WaitStatus::Continued(_) => {
                     continue;
                 }
+                WaitStatus::StillAlive => {
+                    std::thread::sleep(Duration::from_millis(DELAY_MS));
+                }
+            }
+            // check for GUI command
+            if let Ok(pid) = self.receiver_do_step.try_recv() {
+                let _ = self.issue_ptrace_syscall_request(pid, None);
             }
         }
 
@@ -315,48 +339,42 @@ impl<W: Write> Tracer<W> {
     pub fn log_new_child(&mut self, pid: Pid) {
         self.sender_to_gui
             .blocking_send(Message::ReceivedSyscallExit(
+                5,
                 pid,
                 Sysno::clone,
                 RetCode::from_raw(0),
+                true,
             ))
             .unwrap();
     }
 
-    pub fn log_syscall_enter(&mut self, pid: Pid) {
+    pub fn log_syscall_enter(&mut self, origin: u8, pid: Pid) {
         if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
-            if self.args.raw || self.whitelist_set.contains(&syscall_number) {
-                if self.is_step_by_step == false && syscall_number == Sysno::write {
-                    self.is_step_by_step = true;
-                }
+            // appel système pas en whitelist -> ne pas envoyer au GUI, relancer immédiatement sans pause
 
+            if self.whitelist_set.contains(&syscall_number) {
                 let syscall_args = parse_args(pid, syscall_number, registers);
-
-                let should_wait = !self.args.raw
-                    && self.is_step_by_step
-                    && self.pid.map_or(false, |p| p == pid)
-                    && syscall_number != Sysno::wait4;
-
+                let paused = ![Sysno::clone, Sysno::wait4].contains(&syscall_number);
                 self.sender_to_gui
                     .blocking_send(Message::ReceivedSyscallEnter(
+                        origin,
                         pid,
                         syscall_number,
                         syscall_args,
-                        should_wait,
+                        paused,
                     ))
                     .unwrap();
-
-                if should_wait {
-                    // waits for the user to complete this step
-                    let _ = self.receiver_do_step.recv();
-                } else {
-                    std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
+                if !paused {
+                    let _ = self.issue_ptrace_syscall_request(pid, None);
                 }
+            } else {
+                let _ = self.issue_ptrace_syscall_request(pid, None);
             }
         }
     }
 
-    pub fn log_syscall_exit(&mut self, pid: Pid) {
-        if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
+    pub fn log_syscall_exit(&mut self, origin: u8, pid: Pid, allow_resume: bool) {
+        let is_fork: bool = if let Ok((syscall_number, registers)) = self.parse_register_data(pid) {
             // Theres no PTRACE_SYSCALL_INFO_EXIT for an exit-family syscall, hence ret_code will always be 0xffffffffffffffda (which is -38)
             // -38 is ENOSYS which is put into RAX as a default return value by the kernel's syscall entry code.
             // In order to not pollute the summary with this false positive, avoid exit-family syscalls from being counted (same behaviour as strace).
@@ -376,16 +394,24 @@ impl<W: Write> Tracer<W> {
                     code
                 }
             };
+            let is_fork = syscall_number == Sysno::clone;
             if self.args.raw || self.whitelist_set.contains(&syscall_number) {
                 self.sender_to_gui
                     .blocking_send(Message::ReceivedSyscallExit(
+                        origin,
                         pid,
                         syscall_number,
                         ret_code,
+                        is_fork,
                     ))
                     .unwrap();
-                std::thread::sleep(std::time::Duration::from_millis(DELAY_MS));
             }
+            is_fork
+        } else {
+            false
+        };
+        if !is_fork && allow_resume {
+            let _ = self.issue_ptrace_syscall_request(pid, None);
         }
     }
 

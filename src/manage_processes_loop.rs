@@ -1,5 +1,5 @@
 use clap::Parser;
-use nix::unistd::{ForkResult, fork};
+use nix::unistd::{ForkResult, Pid, fork};
 use ptrace_gui::{
     Tracer,
     args::{Args, Command},
@@ -8,11 +8,15 @@ use ptrace_gui::{
 };
 use std::io;
 
-pub fn manage_processes_loop() -> (std::sync::mpsc::Sender<()>, std::sync::mpsc::Sender<()>, tokio::sync::mpsc::Receiver<Message>) {
+pub fn manage_processes_loop() -> (
+    std::sync::mpsc::Sender<()>,
+    std::sync::mpsc::Sender<Pid>,
+    tokio::sync::mpsc::Receiver<Message>,
+) {
     let (sender_to_gui, receiver_to_gui) = tokio::sync::mpsc::channel::<Message>(1000);
 
     let (sender_do_start, receiver_do_start) = std::sync::mpsc::channel::<()>();
-    let (sender_do_step, receiver_do_step) = std::sync::mpsc::channel::<()>();
+    let (sender_do_step, receiver_do_step) = std::sync::mpsc::channel::<Pid>();
 
     let args = Args::parse();
 
@@ -47,7 +51,6 @@ pub fn manage_processes_loop() -> (std::sync::mpsc::Sender<()>, std::sync::mpsc:
                 }
                 Ok(ForkResult::Parent { child }) => child,
                 Err(err) => {
-                    eprintln!("fork() failed: {err}");
                     std::process::exit(-1);
                 }
             };

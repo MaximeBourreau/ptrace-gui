@@ -1,12 +1,13 @@
+mod log_item;
 mod manage_processes_loop;
+
+use std::collections::BTreeMap;
 
 use manage_processes_loop::manage_processes_loop;
 
 use iced::{
-    Element, Font,
-    Length::Fill,
-    Task, color,
-    widget::{Row, button, column, rule, scrollable, space, text},
+    Element, Length, Task,
+    widget::{Row, button, column, rule, scrollable, text},
 };
 use nix::unistd::Pid;
 use ptrace_gui::{
@@ -15,6 +16,8 @@ use ptrace_gui::{
 };
 use syscalls::Sysno;
 use tokio_stream::wrappers::ReceiverStream;
+
+use crate::log_item::LogItem;
 
 const INITIAL_WIDTH: f32 = 800.0;
 const INITIAL_HEIGHT: f32 = 480.0;
@@ -27,8 +30,8 @@ fn main() {
                 AppState {
                     log: Vec::new(),
                     state: RunningState::NeverStarted,
-                    is_paused: false,
-                    pid: None,
+                    first_pid: None,
+                    pid_list: BTreeMap::new(),
                     sender_do_start,
                     sender_do_step,
                 },
@@ -45,53 +48,45 @@ fn main() {
 #[derive(PartialEq)]
 enum RunningState {
     NeverStarted,
-    RunningWithoutFirstExec,
+    RunningBeforeFirstExec,
     Running,
     DoneWithoutFirstExec,
     Done,
 }
 
-enum LogItem {
-    Syscall {
-        pid: Pid,
-        syscall_number: Sysno,
-        args: Option<Vec<String>>,
-        ret_code: Option<RetCode>,
-        log_text: String,
-    },
-    Signal {
-        pid: Pid,
-        signal: nix::sys::signal::Signal,
-        log_text: String,
-    },
-}
-
 struct AppState {
     log: Vec<LogItem>,
     state: RunningState,
-    is_paused: bool,
-    pid: Option<Pid>,
+    first_pid: Option<Pid>, // TODO: remove (redundant with the first entry of pid_list, when not empty; should use pid_list.first_key_value())
+    pid_list: BTreeMap<Pid, bool>,
     sender_do_start: std::sync::mpsc::Sender<()>,
-    sender_do_step: std::sync::mpsc::Sender<()>,
+    sender_do_step: std::sync::mpsc::Sender<Pid>,
 }
 
 impl AppState {
     fn update(&mut self, message: Message) -> iced::Task<Message> {
         match message {
             Message::BtnStart => {
-                self.state = RunningState::RunningWithoutFirstExec;
+                self.state = RunningState::RunningBeforeFirstExec;
                 self.log.clear();
+                self.first_pid.take();
+                self.pid_list.clear();
                 let _ = self.sender_do_start.send(());
                 Task::none()
             }
 
-            Message::TraceeStarted(pid) => {
-                self.pid = Some(pid);
+            Message::TraceeStarted(first_pid) => {
+                self.first_pid = Some(first_pid);
                 Task::none()
             }
 
-            Message::ReceivedSyscallEnter(pid, syscall_number, syscall_args, should_pause) => {
-                self.is_paused = should_pause;
+            Message::TraceeFirstExec => {
+                self.state = RunningState::Running;
+                Task::none()
+            }
+
+            Message::ReceivedSyscallEnter(_origin, pid, syscall_number, syscall_args, paused) => {
+                self.pid_list.insert(pid, true);
 
                 let args: Vec<String> = syscall_args
                     .0
@@ -113,14 +108,30 @@ impl AppState {
 
                 // Preparing log text for a syscall start
                 let log_text = format!(
-                    "{}  {} ... ⏸️",
+                    "{}  {} ...",
                     pid,
                     fmt_syscall_name(syscall_number, &args.join(","))
                 );
 
+                if let Some(item) = self.log.iter_mut().rfind(|item| {
+                    if let LogItem::Syscall {
+                        pid: search_pid, ..
+                    } = item
+                    {
+                        *search_pid == pid
+                    } else {
+                        false
+                    }
+                }) {
+                    if let LogItem::Syscall { paused, .. } = item {
+                        *paused = false;
+                    }
+                }
+
                 self.log.push(LogItem::Syscall {
                     pid,
                     syscall_number,
+                    paused,
                     args: Some(args),
                     ret_code: None,
                     log_text,
@@ -128,25 +139,25 @@ impl AppState {
                 self.scroll_log_to_end()
             }
 
-            Message::ReceivedSyscallExit(pid, syscall_number, final_ret_code) => {
+            Message::ReceivedSyscallExit(
+                _origin,
+                pid,
+                syscall_number,
+                final_ret_code,
+                should_pause,
+            ) => {
                 let str_ret_code = match final_ret_code {
                     RetCode::Ok(x) => format!("{}", x),
                     RetCode::Err(x) => format!("{}", x),
                     RetCode::Address(x) => format!("{}", x),
                 };
 
-                // check if this syscall is exec
-                if self.state == RunningState::RunningWithoutFirstExec
-                    && syscall_number == Sysno::execve
-                {
-                    self.state = RunningState::Running;
-                }
-
                 if let Some(index) = self.find_syscall_item(pid, syscall_number) {
                     let item = &mut self.log[index];
                     if let LogItem::Syscall {
                         pid,
                         syscall_number,
+                        paused,
                         args,
                         ret_code,
                         log_text,
@@ -160,9 +171,13 @@ impl AppState {
                             fmt_syscall_name(*syscall_number, &args.as_ref().unwrap().join(",")),
                             str_ret_code
                         );
+                        *paused = should_pause;
                     };
                     Task::none()
                 } else {
+                    if syscall_number == Sysno::clone {
+                        self.pid_list.insert(pid, true);
+                    }
                     // Preparing log text for a syscall return
                     let log_text = format!(
                         "{}  … {} → {}",
@@ -174,6 +189,7 @@ impl AppState {
                     self.log.push(LogItem::Syscall {
                         pid,
                         syscall_number,
+                        paused: should_pause,
                         args: None,
                         ret_code: Some(final_ret_code),
                         log_text,
@@ -192,14 +208,13 @@ impl AppState {
                 self.scroll_log_to_end()
             }
 
-            Message::BtnContinue => {
-                self.is_paused = false;
-                let _ = self.sender_do_step.send(());
+            Message::BtnContinue(pid) => {
+                let _ = self.sender_do_step.send(pid);
                 Task::none()
             }
 
             Message::TracerDone => {
-                self.state = if self.state == RunningState::RunningWithoutFirstExec {
+                self.state = if self.state == RunningState::RunningBeforeFirstExec {
                     RunningState::DoneWithoutFirstExec
                 } else {
                     RunningState::Done
@@ -232,96 +247,49 @@ impl AppState {
     }
 
     fn view(&self) -> Element<Message> {
-        let top_row = {
-            let execution_status = match self.state {
-                RunningState::Running | RunningState::RunningWithoutFirstExec => {
-                    Some(text("Running"))
-                }
-                RunningState::Done => Some(text("Terminated")),
-                RunningState::DoneWithoutFirstExec => {
-                    Some(text("Execution of the traced program failed"))
-                }
-                _ => None,
-            };
-
-            let btn_start = match self.state {
-                RunningState::NeverStarted => Some(button("start").on_press(Message::BtnStart)),
-                RunningState::Done | RunningState::DoneWithoutFirstExec => {
-                    Some(button("restart").on_press(Message::BtnStart))
-                }
-                _ => None,
-            };
-
-            let btn_paused = match self.state {
-                RunningState::Running | RunningState::RunningWithoutFirstExec => {
-                    if self.is_paused {
-                        Some(button("continue").on_press(Message::BtnContinue))
-                    } else {
-                        Some(button("continue"))
-                    }
-                }
-                _ => None,
-            };
-
-            Row::new()
-                .align_y(iced::Center)
-                .padding(5)
-                .spacing(5)
-                .push(execution_status)
-                .push(btn_start)
-                .push(space::horizontal())
-                .push(btn_paused)
+        let execution_status = match self.state {
+            RunningState::Running | RunningState::RunningBeforeFirstExec => Some(text("Running")),
+            RunningState::Done => Some(text("Terminated")),
+            RunningState::DoneWithoutFirstExec => {
+                Some(text("Execution of the traced program failed"))
+            }
+            _ => None,
         };
 
-        let tracer_log: Element<_> = {
-            let t = self.log.iter().map(|log_item| {
-                let font = Font {
-                    weight: iced::font::Weight::Bold,
-                    ..Font::MONOSPACE
-                };
-                // Extract the pid and the string of this log item
-                let (pid, log_text) = match log_item {
-                    LogItem::Syscall {
-                        pid,
-                        syscall_number: _,
-                        args: _,
-                        ret_code: _,
-                        log_text,
-                    } => (pid, log_text),
-                    LogItem::Signal {
-                        pid,
-                        signal: _,
-                        log_text,
-                    } => (pid, log_text),
-                };
-                // Display first process and its child processes in different colors
-                let c = if self.pid == Some(*pid) {
-                    // color!(0x428BCA)
-                    color!(0x2d6a9f)
-                } else {
-                    // color!(0x5CB85C)
-                    color!(0x3e8e3e)
-                };
-                Element::from(text(log_text).color(c).font(font))
-            });
+        let btn_start = match self.state {
+            RunningState::NeverStarted => Some(button("start").on_press(Message::BtnStart)),
+            RunningState::Done | RunningState::DoneWithoutFirstExec => {
+                Some(button("restart").on_press(Message::BtnStart))
+            }
+            _ => None,
+        };
+
+        let top_row = Row::from_vec(vec![execution_status.into(), btn_start.into()])
+            .align_y(iced::Center)
+            .padding(5)
+            .spacing(5);
+
+        let log_view = {
+            let t = self
+                .log
+                .iter()
+                .map(|log_item| log_item.view(self.first_pid));
 
             scrollable(column(t).spacing(2))
-                .height(Fill)
-                .width(Fill)
+                .height(Length::Fill)
+                .width(Length::Fill)
                 .id("log")
-                .into()
         };
 
-        column![top_row, rule::horizontal(5), tracer_log,].into()
+        column![top_row, rule::horizontal(5), log_view].into()
     }
 }
 
 fn fmt_syscall_name(syscall_number: Sysno, args: &str) -> String {
-    if syscall_number == Sysno::clone {
-        "fork()".to_string()
-    } else if syscall_number == Sysno::exit_group {
-        format!("exit({})", args)
-    } else {
-        format!("{}({})", syscall_number, args)
+    match syscall_number {
+        Sysno::clone => "fork()".to_string(),
+        Sysno::wait4 => "waitpid(…)".to_string(),
+        Sysno::exit_group => format!("exit({})", args),
+        _ => format!("{}({})", syscall_number, args),
     }
 }
