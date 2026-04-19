@@ -56,10 +56,12 @@ struct AppState {
     log: Vec<LogItem>,
     state: RunningState,
     first_pid: Option<Pid>, // TODO: remove (redundant with the first entry of pid_list, when not empty; should use pid_list.first_key_value())
-    pid_list: BTreeMap<Pid, bool>,
+    pid_list: BTreeMap<Pid, ProcessState>,
     sender_do_start: std::sync::mpsc::Sender<()>,
     sender_do_step: std::sync::mpsc::Sender<Pid>,
 }
+
+struct ProcessState;
 
 impl AppState {
     fn update(&mut self, message: Message) -> iced::Task<Message> {
@@ -84,7 +86,7 @@ impl AppState {
             }
 
             Message::ReceivedSyscallEnter(src_lineno, pid, syscall_number, syscall_args, paused) => {
-                self.pid_list.insert(pid, true);
+                self.pid_list.insert(pid, ProcessState);
 
                 let args: Vec<String> = syscall_args
                     .0
@@ -195,7 +197,7 @@ impl AppState {
                     Task::none()
                 } else {
                     if syscall_number == Sysno::clone {
-                        self.pid_list.insert(pid, true);
+                        self.pid_list.insert(pid, ProcessState);
                     }
                     // Preparing log text for a syscall return
                     let log_text = if cfg!(debug_assertions) {
