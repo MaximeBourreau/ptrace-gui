@@ -1,9 +1,7 @@
 mod log_item;
-mod manage_processes_loop;
+mod tracer_manager;
 
 use std::collections::BTreeMap;
-
-use manage_processes_loop::manage_processes_loop;
 
 use iced::{
     Element, Length, Task,
@@ -25,7 +23,7 @@ const INITIAL_HEIGHT: f32 = 480.0;
 fn main() {
     let _ = iced::application(
         || {
-            let (sender_do_start, sender_do_step, receiver_to_gui) = manage_processes_loop();
+            let (sender_do_start, sender_do_step, receiver_to_gui) = tracer_manager::run();
             (
                 AppState {
                     log: Vec::new(),

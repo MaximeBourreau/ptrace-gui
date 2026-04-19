@@ -8,7 +8,7 @@ use ptrace_gui::{
 };
 use std::io;
 
-pub fn manage_processes_loop() -> (
+pub fn run() -> (
     std::sync::mpsc::Sender<()>,
     std::sync::mpsc::Sender<Pid>,
     tokio::sync::mpsc::Receiver<Message>,
