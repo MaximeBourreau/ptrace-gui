@@ -6,7 +6,7 @@ use nix::unistd::Pid;
 use ptrace_gui::{message::Message, syscall_info::RetCode};
 use syscalls::Sysno;
 
-pub enum LogItem {
+pub enum TimelineEntry {
     Syscall {
         pid: Pid,
         syscall_number: Sysno,
@@ -22,7 +22,7 @@ pub enum LogItem {
     },
 }
 
-impl LogItem {
+impl TimelineEntry {
     pub fn view(&self, first_pid: Option<Pid>) -> iced::Element<Message> {
         let font = Font {
             weight: iced::font::Weight::Bold,
@@ -30,13 +30,13 @@ impl LogItem {
         };
         // Extract the pid and the string of this log item
         let (pid, log_text, paused) = match self {
-            LogItem::Syscall {
+            TimelineEntry::Syscall {
                 pid,
                 log_text,
                 paused,
                 ..
             } => (pid, log_text, *paused),
-            LogItem::Signal { pid, log_text, .. } => (pid, log_text, false),
+            TimelineEntry::Signal { pid, log_text, .. } => (pid, log_text, false),
         };
         // Display first process and its child processes in different colors
         let c = if first_pid == Some(*pid) {

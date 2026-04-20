@@ -1,4 +1,4 @@
-mod log_item;
+mod timeline_entry;
 mod tracer_manager;
 
 use std::collections::BTreeMap;
@@ -15,7 +15,7 @@ use ptrace_gui::{
 use syscalls::Sysno;
 use tokio_stream::wrappers::ReceiverStream;
 
-use crate::log_item::LogItem;
+use crate::timeline_entry::TimelineEntry;
 
 const INITIAL_WIDTH: f32 = 800.0;
 const INITIAL_HEIGHT: f32 = 480.0;
@@ -26,7 +26,7 @@ fn main() {
             let (sender_do_start, sender_do_step, receiver_to_gui) = tracer_manager::run();
             (
                 AppState {
-                    log: Vec::new(),
+                    timeline: Vec::new(),
                     state: RunningState::NeverStarted,
                     first_pid: None,
                     pid_list: BTreeMap::new(),
@@ -53,7 +53,7 @@ enum RunningState {
 }
 
 struct AppState {
-    log: Vec<LogItem>,
+    timeline: Vec<TimelineEntry>,
     state: RunningState,
     first_pid: Option<Pid>, // TODO: remove (redundant with the first entry of pid_list, when not empty; should use pid_list.first_key_value())
     pid_list: BTreeMap<Pid, ProcessState>,
@@ -68,7 +68,7 @@ impl AppState {
         match message {
             Message::BtnStart => {
                 self.state = RunningState::RunningBeforeFirstExec;
-                self.log.clear();
+                self.timeline.clear();
                 self.first_pid.take();
                 self.pid_list.clear();
                 let _ = self.sender_do_start.send(());
@@ -122,8 +122,8 @@ impl AppState {
                     )
                 };
 
-                if let Some(item) = self.log.iter_mut().rfind(|item| {
-                    if let LogItem::Syscall {
+                if let Some(item) = self.timeline.iter_mut().rfind(|item| {
+                    if let TimelineEntry::Syscall {
                         pid: search_pid, ..
                     } = item
                     {
@@ -132,12 +132,12 @@ impl AppState {
                         false
                     }
                 }) {
-                    if let LogItem::Syscall { paused, .. } = item {
+                    if let TimelineEntry::Syscall { paused, .. } = item {
                         *paused = false;
                     }
                 }
 
-                self.log.push(LogItem::Syscall {
+                self.timeline.push(TimelineEntry::Syscall {
                     pid,
                     syscall_number,
                     paused,
@@ -162,8 +162,8 @@ impl AppState {
                 };
 
                 if let Some(index) = self.find_syscall_item(pid, syscall_number) {
-                    let item = &mut self.log[index];
-                    if let LogItem::Syscall {
+                    let item = &mut self.timeline[index];
+                    if let TimelineEntry::Syscall {
                         pid,
                         syscall_number,
                         paused,
@@ -217,7 +217,7 @@ impl AppState {
                         )
                     };
 
-                    self.log.push(LogItem::Syscall {
+                    self.timeline.push(TimelineEntry::Syscall {
                         pid,
                         syscall_number,
                         paused: should_pause,
@@ -231,7 +231,7 @@ impl AppState {
 
             Message::ReceivedProcessTermination(pid, signal) => {
                 let log_text = format!("{}  received signal {}", pid, signal);
-                self.log.push(LogItem::Signal {
+                self.timeline.push(TimelineEntry::Signal {
                     pid,
                     signal,
                     log_text,
@@ -263,8 +263,8 @@ impl AppState {
         searched_pid: Pid,
         searched_syscall_number: Sysno,
     ) -> Option<usize> {
-        self.log.iter().rposition(|item| match item {
-            LogItem::Syscall {
+        self.timeline.iter().rposition(|item| match item {
+            TimelineEntry::Syscall {
                 pid,
                 syscall_number,
                 ..
@@ -300,9 +300,9 @@ impl AppState {
             .padding(5)
             .spacing(5);
 
-        let log_view = {
+        let timeline_view = {
             let t = self
-                .log
+                .timeline
                 .iter()
                 .map(|log_item| log_item.view(self.first_pid));
 
@@ -312,7 +312,7 @@ impl AppState {
                 .id("log")
         };
 
-        column![top_row, rule::horizontal(5), log_view].into()
+        column![top_row, rule::horizontal(5), timeline_view].into()
     }
 }
 
