@@ -178,6 +178,7 @@ impl<W: Write> Tracer<W> {
         }
 
         self.sender_to_gui
+            // Previously, right after this SIGTRAP, we incorrectly emitted a fake syscall_exit for the initial execve.
             .blocking_send(Message::TraceeFirstExec)
             .unwrap();
 

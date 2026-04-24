@@ -58,7 +58,7 @@ pub fn run() -> (
             // tell the user the tracee pid
 
             sender_to_gui
-                .blocking_send(Message::TraceeStarted(pid))
+                .blocking_send(Message::TraceeProcessCreated(pid))
                 .unwrap();
 
             // run the tracer
@@ -67,6 +67,7 @@ pub fn run() -> (
 
             // tell the user the tracer (and the traced program) has terminated
 
+            // TODO: pass the return value of run_tracer in the TracerDone message
             sender_to_gui.blocking_send(Message::TracerDone).unwrap();
         }
     });

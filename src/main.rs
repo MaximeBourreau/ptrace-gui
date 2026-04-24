@@ -4,8 +4,8 @@ mod tracer_manager;
 use std::collections::BTreeMap;
 
 use iced::{
-    Element, Length, Task,
-    widget::{Row, button, column, rule, scrollable, text},
+    Color, Element, Font, Length, Task,
+    widget::{Row, button, column, container, row, rule, scrollable, text},
 };
 use nix::unistd::Pid;
 use ptrace_gui::{
@@ -28,7 +28,6 @@ fn main() {
                 AppState {
                     timeline: Vec::new(),
                     state: RunningState::NeverStarted,
-                    first_pid: None,
                     pid_list: BTreeMap::new(),
                     sender_do_start,
                     sender_do_step,
@@ -55,13 +54,14 @@ enum RunningState {
 struct AppState {
     timeline: Vec<TimelineEntry>,
     state: RunningState,
-    first_pid: Option<Pid>, // TODO: remove (redundant with the first entry of pid_list, when not empty; should use pid_list.first_key_value())
     pid_list: BTreeMap<Pid, ProcessState>,
     sender_do_start: std::sync::mpsc::Sender<()>,
     sender_do_step: std::sync::mpsc::Sender<Pid>,
 }
 
-struct ProcessState;
+struct ProcessState {
+    done: bool,
+}
 
 impl AppState {
     fn update(&mut self, message: Message) -> iced::Task<Message> {
@@ -69,14 +69,15 @@ impl AppState {
             Message::BtnStart => {
                 self.state = RunningState::RunningBeforeFirstExec;
                 self.timeline.clear();
-                self.first_pid.take();
                 self.pid_list.clear();
                 let _ = self.sender_do_start.send(());
                 Task::none()
             }
 
-            Message::TraceeStarted(first_pid) => {
-                self.first_pid = Some(first_pid);
+            Message::TraceeProcessCreated(first_pid) => {
+                // initial fork done, we know the tracee pid
+                self.pid_list
+                    .insert(first_pid, ProcessState { done: false });
                 Task::none()
             }
 
@@ -85,9 +86,13 @@ impl AppState {
                 Task::none()
             }
 
-            Message::ReceivedSyscallEnter(src_lineno, pid, syscall_number, syscall_args, paused) => {
-                self.pid_list.insert(pid, ProcessState);
-
+            Message::ReceivedSyscallEnter(
+                src_lineno,
+                pid,
+                syscall_number,
+                syscall_args,
+                paused,
+            ) => {
                 let args: Vec<String> = syscall_args
                     .0
                     .iter()
@@ -109,8 +114,9 @@ impl AppState {
                 // Preparing log text for a syscall start
                 let log_text = if cfg!(debug_assertions) {
                     format!(
-                        "L{} {}  {} ...",
+                        "L{} L{} {}  {} ...",
                         src_lineno,
+                        line!(),
                         pid,
                         fmt_syscall_name(syscall_number, &args.join(","))
                     )
@@ -145,6 +151,11 @@ impl AppState {
                     ret_code: None,
                     log_text,
                 });
+
+                self.pid_list
+                    .entry(pid)
+                    .or_insert(ProcessState { done: false });
+
                 self.scroll_log_to_end()
             }
 
@@ -177,33 +188,46 @@ impl AppState {
                         // Updating log text for the complete syscall
                         *log_text = if cfg!(debug_assertions) {
                             format!(
-                                "L{} {}  {} → {}",
+                                "L{} L{} {}  {} → {}",
                                 src_lineno,
+                                line!(),
                                 pid,
-                                fmt_syscall_name(*syscall_number, &args.as_ref().unwrap().join(",")),
+                                fmt_syscall_name(
+                                    *syscall_number,
+                                    &args.as_ref().unwrap().join(",")
+                                ),
                                 str_ret_code
                             )
                         } else {
                             format!(
                                 "{}  {} → {}",
                                 pid,
-                                fmt_syscall_name(*syscall_number, &args.as_ref().unwrap().join(",")),
+                                fmt_syscall_name(
+                                    *syscall_number,
+                                    &args.as_ref().unwrap().join(",")
+                                ),
                                 str_ret_code
                             )
                         };
 
                         *paused = should_pause;
                     };
+                    if syscall_number == Sysno::exit_group {
+                        if let Some(process_state) = self.pid_list.get_mut(&pid) {
+                            process_state.done = true;
+                        }
+                    }
                     Task::none()
                 } else {
                     if syscall_number == Sysno::clone {
-                        self.pid_list.insert(pid, ProcessState);
+                        self.pid_list.insert(pid, ProcessState { done: false });
                     }
                     // Preparing log text for a syscall return
                     let log_text = if cfg!(debug_assertions) {
                         format!(
-                            "L{} {}  … {} → {}",
+                            "L{} L{} {}  … {} → {}",
                             src_lineno,
+                            line!(),
                             pid,
                             fmt_syscall_name(syscall_number, "…"),
                             str_ret_code
@@ -301,10 +325,12 @@ impl AppState {
             .spacing(5);
 
         let timeline_view = {
+            let first_pid = self.pid_list.first_key_value().map(|(k, _)| *k);
+
             let t = self
                 .timeline
                 .iter()
-                .map(|log_item| log_item.view(self.first_pid));
+                .map(|log_item| log_item.view(first_pid));
 
             scrollable(column(t).spacing(2))
                 .height(Length::Fill)
@@ -312,7 +338,34 @@ impl AppState {
                 .id("log")
         };
 
-        column![top_row, rule::horizontal(5), timeline_view].into()
+        let processes_view = {
+            let font = Font { ..Font::MONOSPACE };
+
+            let t = self.pid_list.iter().map(|(pid, process_state)| {
+                let content = if !process_state.done {
+                    format!("{pid}")
+                } else {
+                    format!("{pid} ✔")
+                };
+                text(content).font(font).into()
+            });
+            let scroll = scrollable(column(t).spacing(2))
+                .height(Length::Fill)
+                .width(Length::Fixed(200.0))
+                .id("process");
+
+            container(scroll).style(|_theme| container::Style {
+                background: Some(Color::from_rgb8(240, 240, 240).into()),
+                ..Default::default()
+            })
+        };
+
+        column![
+            top_row,
+            rule::horizontal(5),
+            row![timeline_view, processes_view]
+        ]
+        .into()
     }
 }
 

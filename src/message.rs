@@ -12,7 +12,7 @@ pub enum Message {
     BtnContinue(Pid),
 
     /// The tracee started
-    TraceeStarted(Pid),
+    TraceeProcessCreated(Pid),
 
     /// The tracee reached the post-exec ptrace stop
     TraceeFirstExec,
