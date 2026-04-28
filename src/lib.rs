@@ -186,7 +186,13 @@ impl<W: Write> Tracer<W> {
         let _ = self.issue_ptrace_syscall_request(pid, None);
 
         loop {
-            let status = waitpid(None, Some(WaitPidFlag::WNOHANG))?;
+
+            let status: WaitStatus = {
+                match waitpid(None, Some(WaitPidFlag::WNOHANG)) {
+                    Ok(wait_status) => wait_status,
+                    Err(_errno) => return Ok(())
+                }
+            };
 
             match status {
                 // `WIFSTOPPED(status), signal is WSTOPSIG(status)
@@ -317,7 +323,6 @@ impl<W: Write> Tracer<W> {
                         if coredump { "(core dumped)" } else { "" }
                     )?;
                     self.log_process_termination(pid, signal);
-                    break;
                 }
                 // WIFCONTINUED(status), this usually happens when a process receives a SIGCONT.
                 // Just continue with the next iteration of the loop.
@@ -334,7 +339,6 @@ impl<W: Write> Tracer<W> {
             }
         }
 
-        Ok(())
     }
 
     pub fn log_new_child(&mut self, pid: Pid) {

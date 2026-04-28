@@ -260,6 +260,9 @@ impl AppState {
                     signal,
                     log_text,
                 });
+                if let Some(process_state) = self.pid_list.get_mut(&pid) {
+                    process_state.done = true;
+                }
                 self.scroll_log_to_end()
             }
 
@@ -343,9 +346,9 @@ impl AppState {
 
             let t = self.pid_list.iter().map(|(pid, process_state)| {
                 let content = if !process_state.done {
-                    format!("{pid}")
+                    format!("  {pid}")
                 } else {
-                    format!("{pid} ✔")
+                    format!("✘ {pid}")
                 };
                 text(content).font(font).into()
             });
