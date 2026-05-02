@@ -1,10 +1,10 @@
 mod timeline_entry;
 mod tracer_manager;
 
-use std::collections::BTreeMap;
+use std::{collections::BTreeMap, os::unix::process};
 
 use iced::{
-    Color, Element, Font, Length, Task,
+    Alignment, Color, Element, Font, Length, Task,
     widget::{Row, button, column, container, row, rule, scrollable, text},
 };
 use nix::unistd::Pid;
@@ -60,6 +60,8 @@ struct AppState {
 }
 
 struct ProcessState {
+    last_timeline_index: Option<usize>,
+    user_should_resume: bool,
     done: bool,
 }
 
@@ -76,8 +78,14 @@ impl AppState {
 
             Message::TraceeProcessCreated(first_pid) => {
                 // initial fork done, we know the tracee pid
-                self.pid_list
-                    .insert(first_pid, ProcessState { done: false });
+                self.pid_list.insert(
+                    first_pid,
+                    ProcessState {
+                        last_timeline_index: None,
+                        user_should_resume: false,
+                        done: false,
+                    },
+                );
                 Task::none()
             }
 
@@ -128,33 +136,18 @@ impl AppState {
                     )
                 };
 
-                if let Some(item) = self.timeline.iter_mut().rfind(|item| {
-                    if let TimelineEntry::Syscall {
-                        pid: search_pid, ..
-                    } = item
-                    {
-                        *search_pid == pid
-                    } else {
-                        false
-                    }
-                }) {
-                    if let TimelineEntry::Syscall { paused, .. } = item {
-                        *paused = false;
-                    }
-                }
-
                 self.timeline.push(TimelineEntry::Syscall {
                     pid,
                     syscall_number,
-                    paused,
                     args: Some(args),
                     ret_code: None,
                     log_text,
                 });
 
-                self.pid_list
-                    .entry(pid)
-                    .or_insert(ProcessState { done: false });
+                self.pid_list.entry(pid).and_modify(|entry| {
+                    entry.last_timeline_index = Some(self.timeline.len() - 1);
+                    entry.user_should_resume = paused;
+                });
 
                 self.scroll_log_to_end()
             }
@@ -166,90 +159,86 @@ impl AppState {
                 final_ret_code,
                 should_pause,
             ) => {
-                let str_ret_code = match final_ret_code {
-                    RetCode::Ok(x) => format!("{}", x),
-                    RetCode::Err(x) => format!("{}", x),
-                    RetCode::Address(x) => format!("{}", x),
-                };
-
-                if let Some(index) = self.find_syscall_item(pid, syscall_number) {
-                    let item = &mut self.timeline[index];
-                    if let TimelineEntry::Syscall {
-                        pid,
-                        syscall_number,
-                        paused,
-                        args,
-                        ret_code,
-                        log_text,
-                    } = item
-                    {
-                        *ret_code = Some(final_ret_code);
-
-                        // Updating log text for the complete syscall
-                        *log_text = if cfg!(debug_assertions) {
-                            format!(
-                                "L{} L{} {}  {} → {}",
-                                src_lineno,
-                                line!(),
-                                pid,
-                                fmt_syscall_name(
-                                    *syscall_number,
-                                    &args.as_ref().unwrap().join(",")
-                                ),
-                                str_ret_code
-                            )
-                        } else {
-                            format!(
-                                "{}  {} → {}",
-                                pid,
-                                fmt_syscall_name(
-                                    *syscall_number,
-                                    &args.as_ref().unwrap().join(",")
-                                ),
-                                str_ret_code
-                            )
-                        };
-
-                        *paused = should_pause;
-                    };
-                    if syscall_number == Sysno::exit_group {
-                        if let Some(process_state) = self.pid_list.get_mut(&pid) {
-                            process_state.done = true;
-                        }
-                    }
-                    Task::none()
-                } else {
-                    if syscall_number == Sysno::clone {
-                        self.pid_list.insert(pid, ProcessState { done: false });
-                    }
-                    // Preparing log text for a syscall return
+                if (syscall_number == Sysno::clone) && (final_ret_code == RetCode::Ok(0)) {
+                    // this is a new subprocess
                     let log_text = if cfg!(debug_assertions) {
-                        format!(
-                            "L{} L{} {}  … {} → {}",
-                            src_lineno,
-                            line!(),
-                            pid,
-                            fmt_syscall_name(syscall_number, "…"),
-                            str_ret_code
-                        )
+                        format!("L{} L{} {}  … fork() → 0", src_lineno, line!(), pid,)
                     } else {
-                        format!(
-                            "{}  … {} → {}",
-                            pid,
-                            fmt_syscall_name(syscall_number, "…"),
-                            str_ret_code
-                        )
+                        format!("{}  … fork() → 0", pid,)
                     };
-
                     self.timeline.push(TimelineEntry::Syscall {
                         pid,
                         syscall_number,
-                        paused: should_pause,
                         args: None,
                         ret_code: Some(final_ret_code),
                         log_text,
                     });
+                    self.pid_list.insert(
+                        pid,
+                        ProcessState {
+                            last_timeline_index: Some(self.timeline.len() - 1),
+                            user_should_resume: should_pause,
+                            done: false,
+                        },
+                    );
                     self.scroll_log_to_end()
+                } else {
+                    let str_ret_code = match final_ret_code {
+                        RetCode::Ok(x) => format!("{}", x),
+                        RetCode::Err(x) => format!("{}", x),
+                        RetCode::Address(x) => format!("{}", x),
+                    };
+
+                    if let Some(index) = self
+                        .pid_list
+                        .get(&pid)
+                        .and_then(|process_state| process_state.last_timeline_index)
+                    {
+                        let item = &mut self.timeline[index];
+                        if let TimelineEntry::Syscall {
+                            pid,
+                            syscall_number,
+                            args,
+                            ret_code,
+                            log_text,
+                        } = item
+                        {
+                            *ret_code = Some(final_ret_code);
+
+                            // Updating log text for the complete syscall
+                            *log_text = if cfg!(debug_assertions) {
+                                format!(
+                                    "L{} L{} {}  {} → {}",
+                                    src_lineno,
+                                    line!(),
+                                    pid,
+                                    fmt_syscall_name(
+                                        *syscall_number,
+                                        &args.as_ref().unwrap().join(",")
+                                    ),
+                                    str_ret_code
+                                )
+                            } else {
+                                format!(
+                                    "{}  {} → {}",
+                                    pid,
+                                    fmt_syscall_name(
+                                        *syscall_number,
+                                        &args.as_ref().unwrap().join(",")
+                                    ),
+                                    str_ret_code
+                                )
+                            };
+                        };
+                        if let Some(process_state) = self.pid_list.get_mut(&pid) {
+                            if syscall_number == Sysno::exit_group {
+                                process_state.last_timeline_index = None;
+                                process_state.done = true;
+                            }
+                            process_state.user_should_resume = should_pause;
+                        }
+                    }
+                    Task::none()
                 }
             }
 
@@ -282,24 +271,6 @@ impl AppState {
         }
     }
 
-    /*
-    Search the last syscall item, matching pid and syscall number, in the log
-     */
-    fn find_syscall_item(
-        &mut self,
-        searched_pid: Pid,
-        searched_syscall_number: Sysno,
-    ) -> Option<usize> {
-        self.timeline.iter().rposition(|item| match item {
-            TimelineEntry::Syscall {
-                pid,
-                syscall_number,
-                ..
-            } => searched_pid == *pid && searched_syscall_number == *syscall_number,
-            _ => false,
-        })
-    }
-
     fn scroll_log_to_end(&mut self) -> iced::Task<Message> {
         iced::widget::operation::snap_to("log", scrollable::RelativeOffset::END)
     }
@@ -330,10 +301,21 @@ impl AppState {
         let timeline_view = {
             let first_pid = self.pid_list.first_key_value().map(|(k, _)| *k);
 
-            let t = self
-                .timeline
-                .iter()
-                .map(|log_item| log_item.view(first_pid));
+            let t = self.timeline.iter().enumerate().map(|(i, entry)| {
+                let pid = entry.get_pid();
+                let user_should_resume = self
+                    .pid_list
+                    .get(&pid)
+                    .map(|x| x.user_should_resume)
+                    .unwrap_or_default();
+                let is_last_entry = self
+                    .pid_list
+                    .get(&pid)
+                    .map(|x| x.last_timeline_index)
+                    .flatten()
+                    == Some(i);
+                entry.view(Some(pid) == first_pid, is_last_entry, user_should_resume)
+            });
 
             scrollable(column(t).spacing(2))
                 .height(Length::Fill)
@@ -350,7 +332,14 @@ impl AppState {
                 } else {
                     format!("✘ {pid}")
                 };
-                text(content).font(font).into()
+                let t = text(content).font(font); //.into()
+                if process_state.user_should_resume {
+                    row![t, button("▶️").on_press(Message::BtnContinue(*pid)),]
+                        .align_y(Alignment::Center)
+                        .into()
+                } else {
+                    t.into()
+                }
             });
             let scroll = scrollable(column(t).spacing(2))
                 .height(Length::Fill)

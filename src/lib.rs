@@ -186,11 +186,10 @@ impl<W: Write> Tracer<W> {
         let _ = self.issue_ptrace_syscall_request(pid, None);
 
         loop {
-
             let status: WaitStatus = {
                 match waitpid(None, Some(WaitPidFlag::WNOHANG)) {
                     Ok(wait_status) => wait_status,
-                    Err(_errno) => return Ok(())
+                    Err(_errno) => return Ok(()),
                 }
             };
 
@@ -338,7 +337,6 @@ impl<W: Write> Tracer<W> {
                 let _ = self.issue_ptrace_syscall_request(pid, None);
             }
         }
-
     }
 
     pub fn log_new_child(&mut self, pid: Pid) {

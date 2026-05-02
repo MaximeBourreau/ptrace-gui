@@ -10,7 +10,6 @@ pub enum TimelineEntry {
     Syscall {
         pid: Pid,
         syscall_number: Sysno,
-        paused: bool,
         args: Option<Vec<String>>,
         ret_code: Option<RetCode>,
         log_text: String,
@@ -23,29 +22,37 @@ pub enum TimelineEntry {
 }
 
 impl TimelineEntry {
-    pub fn view(&self, first_pid: Option<Pid>) -> iced::Element<Message> {
+    pub fn get_pid(&self) -> Pid {
+        // Extract the pid and the string of this log item
+        match self {
+            TimelineEntry::Syscall { pid, .. } => *pid,
+            TimelineEntry::Signal { pid, .. } => *pid,
+        }
+    }
+
+    pub fn view(
+        &self,
+        is_first_pid: bool,
+        is_last_entry: bool,
+        user_should_resume: bool,
+    ) -> iced::Element<Message> {
         let font = Font {
             weight: iced::font::Weight::Bold,
             ..Font::MONOSPACE
         };
         // Extract the pid and the string of this log item
-        let (pid, log_text, paused) = match self {
-            TimelineEntry::Syscall {
-                pid,
-                log_text,
-                paused,
-                ..
-            } => (pid, log_text, *paused),
-            TimelineEntry::Signal { pid, log_text, .. } => (pid, log_text, false),
+        let (pid, log_text) = match self {
+            TimelineEntry::Syscall { pid, log_text, .. } => (pid, log_text),
+            TimelineEntry::Signal { pid, log_text, .. } => (pid, log_text),
         };
         // Display first process and its child processes in different colors
-        let c = if first_pid == Some(*pid) {
+        let c = if is_first_pid {
             color!(0x2d6a9f)
         } else {
             color!(0x3e8e3e)
         };
         let t = text(log_text).color(c).font(font);
-        if paused {
+        if user_should_resume && is_last_entry {
             row![t, button("▶️").on_press(Message::BtnContinue(*pid)),]
                 .align_y(Alignment::Center)
                 .into()

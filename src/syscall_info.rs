@@ -2,8 +2,8 @@ use crate::arch::parse_args;
 use crate::style::StyleConfig;
 use libc::{c_ulonglong, user_regs_struct};
 use nix::unistd::Pid;
-use serde::ser::{SerializeMap, SerializeSeq};
 use serde::Serialize;
+use serde::ser::{SerializeMap, SerializeSeq};
 use serde_json::Value;
 use std::borrow::Cow::{self, Borrowed, Owned};
 use std::fmt::{Debug, Display};
@@ -12,7 +12,7 @@ use std::io::Write;
 use std::time::Duration;
 use syscalls::Sysno;
 
-#[derive(Clone,Debug)]
+#[derive(Clone, Debug)]
 pub struct SyscallInfo {
     pub typ: &'static str,
     pub pid: Pid,
@@ -127,7 +127,7 @@ impl Serialize for SyscallArgs {
     }
 }
 
-#[derive(Debug, Copy, Clone)]
+#[derive(Debug, Copy, Clone, PartialEq)]
 pub enum RetCode {
     Ok(i32),
     Err(i32),
