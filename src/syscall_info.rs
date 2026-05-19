@@ -127,6 +127,28 @@ impl Serialize for SyscallArgs {
     }
 }
 
+impl Display for SyscallArgs {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        self
+            .0
+            .iter()
+            .for_each(|arg| {
+                match arg {
+                    SyscallArg::Int(v) => write!(f, "{}", *v).unwrap(), // TODO hex and bit representation
+                    SyscallArg::Str(v) => write!(f, "{:?}", v).unwrap(),
+                    SyscallArg::Addr(v) => {
+                        if *v == 0 {
+                            f.write_str("NULL").unwrap();
+                        } else {
+                            f.write_str("…").unwrap();
+                        }
+                    }
+                };
+            });
+        Ok(())
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq)]
 pub enum RetCode {
     Ok(i32),

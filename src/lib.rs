@@ -298,7 +298,7 @@ impl<W: Write> Tracer<W> {
                               "standard" syscall
                               fork (process creator side)
                             */
-                            let k = self.log_syscall_exit(line!(), pid, true);
+                            self.log_syscall_exit(line!(), pid, true);
                             *syscall_start_time = None;
                         } else {
                             *syscall_start_time = timestamp;
